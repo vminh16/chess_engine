@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>My Python Chess Engine</title>
+    <link rel="stylesheet"
+      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+      integrity="sha384-q94+BZtLrkL1/ohfjR8c6L+A6qzNH9R2hBLwyoAfu3i/WCvQjzL2RQJ3uNHDISdU"
+      crossorigin="anonymous">
+    
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; flex-direction: column; align-items: center; background: #2c3e50; color: white; margin: 0; padding: 20px; }
+        h1 { margin-bottom: 10px; }
+        #board { width: 400px; margin: 20px; }
+        .controls { display: flex; gap: 10px; margin-bottom: 15px; }
+        .status { font-size: 1.2em; color: #f1c40f; margin-bottom: 10px; font-weight: bold; }
+        button { padding: 10px 20px; font-size: 14px; cursor: pointer; color: white; border: none; border-radius: 4px; transition: background 0.3s; }
+        .btn-white { background: #ecf0f1; color: #2c3e50; font-weight: bold; }
+        .btn-white:hover { background: #bdc3c7; }
+        .btn-black { background: #34495e; border: 1px solid #7f8c8d; }
+        .btn-black:hover { background: #2c3e50; }
+        .thinking { color: #e74c3c; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+
+    <h1>♟️ Python Chess Engine</h1>
+    
+    <div class="status" id="status">White to move</div>
+
+    <div class="controls">
+        <button class="btn-white" onclick="startGame('w')">Play as White</button>
+        <button class="btn-black" onclick="startGame('b')">Play as Black</button>
+    </div>
+
+    <div id="board"></div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+
+    <script>
+        var board = null
+        var game = new Chess()
+        var $status = $('#status')
+        var playerColor = 'w' // Mặc định người chơi cầm Trắng
+
+        function onDragStart (source, piece, position, orientation) {
+            // 1. Không cho phép kéo quân nếu game over
+            if (game.game_over()) return false
+
+            // 2. CHẶN KÉO QUÂN CỦA ĐỐI THỦ
+            // Nếu người chơi cầm Trắng ('w'), không được kéo quân Đen ('b')
+            // Nếu người chơi cầm Đen ('b'), không được kéo quân Trắng ('w')
+            if ((playerColor === 'w' && piece.search(/^b/) !== -1) ||
+                (playerColor === 'b' && piece.search(/^w/) !== -1)) {
+                return false
+            }
+        }
+
+        function onDrop (source, target) {
+            // Thử đi nước đi trên bàn cờ ảo
+            var move = game.move({
+                from: source,
+                to: target,
+                promotion: 'q'
+            })
+
+            // Nếu nước đi không hợp lệ -> Snapback
+            if (move === null) return 'snapback'
+
+            updateStatus()
+            
+            // Sau khi người chơi đi xong, gọi Engine
+            makeEngineMove()
+        }
+
+        function onSnapEnd () {
+            board.position(game.fen())
+        }
+
+        function updateStatus () {
+            var status = ''
+            var moveColor = 'White'
+            if (game.turn() === 'b') {
+                moveColor = 'Black'
+            }
+
+            if (game.in_checkmate()) {
+                status = 'Game over, ' + moveColor + ' is in checkmate.'
+            } else if (game.in_draw()) {
+                status = 'Game over, drawn position'
+            } else {
+                status = moveColor + ' to move'
+                if (game.in_check()) {
+                    status += ', ' + moveColor + ' is in check'
+                }
+            }
+            $status.text(status)
+        }
+
+        // --- HÀM GỌI ENGINE ---
+        function makeEngineMove() {
+            // Kiểm tra xem game đã hết chưa trước khi gọi
+            if (game.game_over()) return;
+
+            $status.text("Engine is thinking...").addClass('thinking');
+            
+            fetch('/get_move', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fen: game.fen() })
+            })
+            .then(response => response.json())
+            .then(data => {
+                $status.removeClass('thinking'); // Tắt hiệu ứng nhấp nháy
+                if (data.success) {
+                    game.move({
+                        from: data.from,
+                        to: data.to,
+                        promotion: data.promotion
+                    })
+                    board.position(game.fen())
+                    updateStatus()
+                } else {
+                    $status.text("Engine Error: " + data.message)
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                $status.removeClass('thinking');
+                $status.text("Connection Error!")
+            });
+        }
+
+        // --- HÀM BẮT ĐẦU GAME MỚI ---
+        function startGame(color) {
+            playerColor = color
+            game.reset()
+            
+            // Cài đặt hướng nhìn bàn cờ
+            // Nếu cầm Đen -> Xoay bàn cờ ('black')
+            var orientation = (color === 'w') ? 'white' : 'black'
+            
+            var config = {
+                draggable: true,
+                position: 'start',
+                orientation: orientation, // Quan trọng: Xoay bàn cờ
+                onDragStart: onDragStart,
+                onDrop: onDrop,
+                onSnapEnd: onSnapEnd,
+                pieceTheme: '/static/img/chesspieces/{piece}.png'
+            }
+            // Hủy bàn cờ cũ và tạo mới để áp dụng orientation
+            if (board) board.destroy() 
+            board = Chessboard('board', config)
+            
+            updateStatus()
+
+            // Nếu người chơi chọn cầm Đen, nghĩa là Trắng (Engine) đi trước
+            // Gọi engine ngay lập tức
+            if (color === 'b') {
+                makeEngineMove()
+            }
+        }
+
+        // Khởi tạo mặc định
+        startGame('w')
+
+    </script>
+</body>
+</html>

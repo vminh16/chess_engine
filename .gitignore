@@ -1,0 +1,37 @@
+####################
+# Python
+####################
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+####################
+# Virtual env
+####################
+venv/
+.env/
+
+####################
+# OS / IDE
+####################
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+####################
+# ML / Training
+####################
+*.pt
+*.pth
+*.ckpt
+*.onnx
+logs/
+runs/
+outputs/
+
+####################
+# Tests / cache
+####################
+.pytest_cache/
