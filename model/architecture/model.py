@@ -1,98 +1,79 @@
 import torch
 import torch.nn as nn
-from .blocks import ClassicResBlock, PhantomBlock
-from .head import DecoupledHead
+from .blocks import DFGBlock
 
-class PhantomChessNet(nn.Module):
-    def __init__(self, drop_path_rate=0.2): # Tỉ lệ drop path tối đa
-        super(PhantomChessNet, self).__init__()
+# Import head đã định nghĩa ở trên
+from .head import ContextGatedHead
 
-        # Tính toán tỉ lệ drop cho từng block (tăng tuyến tính từ 0 đến drop_path_rate)
-        # Tổng số blocks = 3 (Stg1) + 4 (Stg2) + 2 (Stg3a) + 2 (Stg3c) = 11 blocks
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, 11)]
-
+class DGRNChessNet(nn.Module):
+    """
+    Dilated-Gated ResNet (DGRN) for Chess Engines.
+    Đặc điểm: Giữ nguyên resolution 8x8, tầm nhìn đa dạng (Dual-Focus).
+    """
+    def __init__(self, num_blocks=12, hidden_dim=128, input_channels=18, drop_path_rate=0.1):
+        super(DGRNChessNet, self).__init__()
+        
+        # --- Stem: Entry Point ---
+        # Chuyển đổi input thô (18 kênh) sang không gian đặc trưng
         self.stem = nn.Sequential(
-            nn.Conv2d(18, 64, 3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(input_channels, hidden_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+            nn.Mish(inplace=True)
         )
-
-        # Stage 1: (Foundation) - DropPath thấp
-        self.stage1 = nn.Sequential(
-            ClassicResBlock(64, drop_path=dpr[0]),
-            ClassicResBlock(64, drop_path=dpr[1]),
-            ClassicResBlock(64, drop_path=dpr[2])
-        )
-
-        # Stage 2: (Backbone) - DropPath trung bình
-        self.stage2 = nn.Sequential(
-            PhantomBlock(64, 128, expand_ratio=2, drop_path=dpr[3]),
-            PhantomBlock(128, 128, expand_ratio=1.5, drop_path=dpr[4]),
-            PhantomBlock(128, 128, expand_ratio=1.5, drop_path=dpr[5]),
-            PhantomBlock(128, 128, expand_ratio=1.5, drop_path=dpr[6])
-        )
-
-        # Stage 3: (Deep Thinking) - DropPath cao nhất
-        self.stage3_expand = nn.Sequential(
-            PhantomBlock(128, 256, expand_ratio=2, drop_path=dpr[7]),
-            PhantomBlock(256, 256, expand_ratio=1.5, drop_path=dpr[8])
-        )
-
-        self.stage3_compress = nn.Sequential(
-            nn.Conv2d(256, 128, 1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.Mish(inplace=True) # Dùng Mish ở đây cho "mượt"
-        )
-
-        self.stage3_refine = nn.Sequential(
-            ClassicResBlock(128, drop_path=dpr[9]),
-            ClassicResBlock(128, drop_path=dpr[10])
-        )
-
-        self.head = DecoupledHead(in_channels=128, spatial_channels=32, dropout_rate=0.2)
+        
+        # --- Backbone: Deep Thinking ---
+        # Tính toán tỉ lệ drop path tăng dần tuyến tính cho từng block
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, num_blocks)]
+        
+        self.blocks = nn.Sequential(*[
+            DFGBlock(channels=hidden_dim, drop_path=dpr[i])
+            for i in range(num_blocks)
+        ])
+        
+        # --- Head: Evaluation ---
+        self.head = ContextGatedHead(in_channels=hidden_dim, hidden_dim=hidden_dim // 2)
         
         self._init_weights()
 
     def _init_weights(self):
+        """Khởi tạo trọng số khoa học để hội tụ nhanh."""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
+                # Kaiming Normal tốt cho Mish/ReLU
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                # BN weight=1, bias=0
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
-        # ---  Zero-Gamma Initialization ---
-        # Tìm các lớp BN cuối cùng trong mỗi Block và set weight=0
-        # Mục đích: Biến block thành Identity ngay khi bắt đầu train -> Hội tụ cực nhanh
+        # Zero-Gamma Initialization cho Residual Blocks
+        # Giúp block khởi đầu như một hàm Identity, huấn luyện mượt hơn.
+        # Tìm BN cuối cùng trong phần Fusion của mỗi DFGBlock
         for m in self.modules():
-            if isinstance(m, ClassicResBlock):
-                nn.init.constant_(m.bn2.weight, 0) # BN2 là lớp cuối của Classic
-            elif isinstance(m, PhantomBlock):
-                
-                pass 
+            if isinstance(m, DFGBlock):
+                # BN cuối cùng của DFGBlock nằm trong self.fusion[1]
+                nn.init.constant_(m.fusion[1].weight, 0)
 
     def forward(self, x):
+        # Đảm bảo input đúng shape cho ONNX (B, C, H, W)
         x = self.stem(x)
-        x = self.stage1(x)
-        x = self.stage2(x)
-        x = self.stage3_expand(x)
-        x = self.stage3_compress(x)
-        x = self.stage3_refine(x)
+        x = self.blocks(x)
         x = self.head(x)
         return x
 
     def predict(self, x, device='cpu'):
+        """Hàm helper để infer nhanh 1 sample (không dùng khi export ONNX)."""
         self.eval()
         with torch.no_grad():
             if not isinstance(x, torch.Tensor):
                 x = torch.tensor(x, dtype=torch.float32)
-            if x.dim() == 3: x = x.unsqueeze(0)
+            if x.dim() == 3: # Thêm batch dim nếu thiếu
+                x = x.unsqueeze(0)
+            
             x = x.to(device)
             output = self.forward(x)
         return output.item()
-        
-    def load_model(self, path):
-        """Load model state"""
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.load_state_dict(torch.load(path, map_location=device))
-        self.eval()
