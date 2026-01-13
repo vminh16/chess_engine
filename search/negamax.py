@@ -43,20 +43,19 @@ def hybrid_evaluate(board, material_eval, epsilon, model, hash_key, tt_entry=Non
     """
     nn_eval = None
     
-    # 1. Thử lấy NN eval từ TT nếu có
+    # Thử lấy NN eval từ TT nếu có
     if tt_entry is not None and tt_entry.get('static_eval') is not None:
         nn_eval = tt_entry['static_eval']
     
-    # 2. Nếu không có trong cache, chạy model và lưu lại
+   
     if nn_eval is None:
         # nn_eval = model.evaluate(encode_board(board))
         nn_eval = model.predict(encode_board(board))
-        # Cache kết quả NN vào TT ngay lập tức.
-        # Lưu ý: Ta lưu với depth = -1 hoặc logic giữ nguyên các trường khác để chỉ update static_eval
+        # Ta lưu với depth = -1 hoặc logic giữ nguyên các trường khác để chỉ update static_eval
         TT.store(hash_key, depth=-1, value=0, flag=TranspositionTable.EXACT, 
                  age=board.fullmove_number, static_eval=nn_eval)
     hybrid_score = (1 - epsilon) * material_eval + epsilon * nn_eval
-    # Negate điểm nếu là lượt đi của Đen (để phù hợp với logic NN thường là White perspective)
+    # Negate điểm nếu là lượt đi của Đen
     if board.current_turn == Color.BLACK:
         hybrid_score = -hybrid_score
     return hybrid_score
@@ -376,7 +375,7 @@ if __name__ == "__main__":
     fen_code = "r4knr/p4ppp/2Qpb3/2b3B1/8/2q2N2/P1P2PPP/R4RK1 w - - 0 1"
     board = Board(fen_code)
     start_time = time.time()
-    best_move = find_best_move(board, depth=4, epsilon=0.7, model=model)
+    best_move = find_best_move(board, depth=3, epsilon=0.7, model=model)
     end_time = time.time()
     print(f"Time taken: {end_time - start_time} seconds")
     print(f"Best move: {best_move}")

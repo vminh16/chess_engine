@@ -3,128 +3,171 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-# ---  DropPath (Stochastic Depth) ---
-class DropPath(nn.Module):
+# --- Coordinate Attention Module ---
+class CoordinateAttention(nn.Module):
     """
-    Ngẫu nhiên 'bỏ rơi' toàn bộ luồng dữ liệu của block trong khi training.
-    Giúp mạng không bị phụ thuộc vào bất kỳ block đơn lẻ nào -> Mạnh hơn.
+    Coordinate Attention: Thay thế SEBlock, tập trung vào thông tin vị trí không gian.
+    Pooling theo chiều dọc (H) và ngang (W) riêng biệt để mã hóa thông tin tọa độ.
     """
-    def __init__(self, drop_prob=None):
-        super(DropPath, self).__init__()
-        self.drop_prob = drop_prob
-
-    def forward(self, x):
-        if self.drop_prob == 0. or not self.training:
-            return x
-        keep_prob = 1 - self.drop_prob
-        # Tạo mask ngẫu nhiên kích thước [Batch, 1, 1, 1]
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-        random_tensor.floor_()  # Binarize
-        output = x.div(keep_prob) * random_tensor
-        return output
-
-# --- Helper Modules ---
-class SEBlock(nn.Module):
-    # ... (Code cũ giữ nguyên)
-    def __init__(self, channel, reduction=4):
-        super(SEBlock, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channel, channel // reduction, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(channel // reduction, channel, bias=False),
+    def __init__(self, channels, reduction=32):
+        super(CoordinateAttention, self).__init__()
+        self.channels = channels
+        reduction_channels = max(8, channels // reduction)  # Tối thiểu 8 channels
+        
+        # Pooling theo chiều cao (H) - Global Average Pooling theo chiều ngang
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))  # (H, 1)
+        # Pooling theo chiều rộng (W) - Global Average Pooling theo chiều cao
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))  # (1, W)
+        
+        # Convolution để mã hóa thông tin vị trí
+        self.conv_h = nn.Sequential(
+            nn.Conv2d(channels, reduction_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(reduction_channels),
+            nn.Mish(inplace=True)
+        )
+        self.conv_w = nn.Sequential(
+            nn.Conv2d(channels, reduction_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(reduction_channels),
+            nn.Mish(inplace=True)
+        )
+        
+        # Excitation: Sinh ra gate weights
+        self.conv_h_gate = nn.Sequential(
+            nn.Conv2d(reduction_channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
             nn.Sigmoid()
         )
-    def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
-
-class GhostModule(nn.Module):
-    # ... (Code cũ giữ nguyên)
-    def __init__(self, inp, oup, kernel_size=1, ratio=2, dw_size=3, stride=1, relu=True):
-        super(GhostModule, self).__init__()
-        self.oup = oup
-        init_channels = math.ceil(oup / ratio)
-        new_channels = init_channels * (ratio - 1)
-        self.primary_conv = nn.Sequential(
-            nn.Conv2d(inp, init_channels, kernel_size, stride, kernel_size // 2, bias=False),
-            nn.BatchNorm2d(init_channels),
-            nn.ReLU(inplace=True) if relu else nn.Sequential(),
+        self.conv_w_gate = nn.Sequential(
+            nn.Conv2d(reduction_channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.Sigmoid()
         )
-        self.cheap_operation = nn.Sequential(
-            nn.Conv2d(init_channels, new_channels, dw_size, 1, dw_size // 2, groups=init_channels, bias=False),
-            nn.BatchNorm2d(new_channels),
-            nn.ReLU(inplace=True) if relu else nn.Sequential(),
-        )
+    
     def forward(self, x):
-        x1 = self.primary_conv(x)
-        x2 = self.cheap_operation(x1)
-        out = torch.cat([x1, x2], dim=1)
-        return out[:, :self.oup, :, :]
-
-# --- UPDATED BLOCK 1 ---
-class ClassicResBlock(nn.Module):
-    def __init__(self, channels, drop_path=0.0): # Thêm tham số drop_path
-        super(ClassicResBlock, self).__init__()
-        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.relu = nn.ReLU(inplace=True)
+        """
+        Args:
+            x: Input tensor với shape (N, C, H, W)
+        Returns:
+            Output tensor với shape (N, C, H, W)
+        """
+        identity = x
         
-        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(channels)
+        # Pooling theo chiều cao (H): (N, C, H, W) -> (N, C, H, 1)
+        x_h = self.pool_h(x)
+        # Pooling theo chiều rộng (W): (N, C, H, W) -> (N, C, 1, W)
+        x_w = self.pool_w(x)
+        x_w = x_w.permute(0, 1, 3, 2)  # (N, C, 1, W) -> (N, C, W, 1) để match với x_h
         
-        # Tích hợp DropPath
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-
-    def forward(self, x):
-        residual = x
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
+        # Encode thông tin vị trí
+        y_h = self.conv_h(x_h)  # (N, reduction_channels, H, 1)
+        y_w = self.conv_w(x_w)  # (N, reduction_channels, W, 1)
         
-        # Apply DropPath trước khi cộng Residual
-        out = self.drop_path(out) + residual
-        out = self.relu(out)
+        # Excitation: Tạo gate weights
+        gate_h = self.conv_h_gate(y_h)  # (N, C, H, 1)
+        gate_w = self.conv_w_gate(y_w)  # (N, C, W, 1)
+        gate_w = gate_w.permute(0, 1, 3, 2)  # (N, C, W, 1) -> (N, C, 1, W)
+        
+        # Áp dụng gates: Nhân với gate_H và gate_W
+        # Gate_H: "Hàng nào đang bị phong tỏa"
+        # Gate_W: "Cột nào đang mở"
+        out = identity * gate_h * gate_w
+        
         return out
 
-# --- UPDATED BLOCK 2 ---
-class PhantomBlock(nn.Module):
-    def __init__(self, in_chs, out_chs, expand_ratio=1.5, use_se=True, drop_path=0.0): # Thêm drop_path
-        super(PhantomBlock, self).__init__()
-        hidden_chs = int(in_chs * expand_ratio)
+# --- Dual-Focus Gated Block (DFG-Block) ---
+class DFGBlock(nn.Module):
+    """
+    Dual-Focus Gated Block: Block mới thay thế ClassicResBlock và PhantomBlock.
+    
+    Luồng xử lý:
+    1. Split: Chia input thành 2 nhánh channels bằng nhau
+    2. Dual Transformation:
+       - Local: Conv 3x3 (Dilation=1) - Cận chiến, mối quan hệ liền kề
+       - Remote: Conv 3x3 (Dilation=2) - Tầm xa, đường chéo dài, kiểm soát hàng/cột
+    3. Fusion: Concatenate + Conv 1x1 + BN + Mish
+    4. Coordinate Attention: Thay SEBlock, tập trung vào vị trí không gian
+    5. Residual Connection
+    """
+    def __init__(self, channels, drop_path=0.0):
+        """
+        Args:
+            channels: Số channels đầu vào và đầu ra (giữ nguyên)
+            drop_path: Tỉ lệ drop path cho stochastic depth
+        """
+        super(DFGBlock, self).__init__()
         
-        self.ghost_expand = GhostModule(in_chs, hidden_chs, relu=True)
+        # Kiểm tra channels phải chia hết cho 2
+        if channels % 2 != 0:
+            raise ValueError(f"DFGBlock: channels ({channels}) must be divisible by 2 for split operation")
         
-        self.dw_conv = nn.Sequential(
-            nn.Conv2d(hidden_chs, hidden_chs, 3, 1, 1, groups=hidden_chs, bias=False),
-            nn.BatchNorm2d(hidden_chs),
-            nn.ReLU(inplace=True)
+        self.channels = channels
+        split_channels = channels // 2
+        
+        # --- Split: Chia thành 2 nhánh channels bằng nhau ---
+        # Không cần layer, sẽ split trong forward()
+        
+        # --- Dual Transformation ---
+        # Nhánh 1: Local (Cận chiến) - Conv 3x3 với Dilation=1
+        self.local_conv = nn.Sequential(
+            nn.Conv2d(split_channels, split_channels, kernel_size=3, 
+                     padding=1, dilation=1, groups=split_channels, bias=False),
+            nn.BatchNorm2d(split_channels),
+            nn.Mish(inplace=True)
         )
         
-        self.se = SEBlock(hidden_chs) if use_se else nn.Identity()
-        self.ghost_proj = GhostModule(hidden_chs, out_chs, relu=False)
+        # Nhánh 2: Remote (Tầm xa) - Conv 3x3 với Dilation=2
+        # Dilation=2: Trường nhìn tương đương 5x5, không tăng tham số
+        self.remote_conv = nn.Sequential(
+            nn.Conv2d(split_channels, split_channels, kernel_size=3,
+                     padding=2, dilation=2, groups=split_channels, bias=False),
+            nn.BatchNorm2d(split_channels),
+            nn.Mish(inplace=True)
+        )
         
-        self.shortcut = nn.Sequential()
-        if in_chs != out_chs:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_chs, out_chs, 1, bias=False),
-                nn.BatchNorm2d(out_chs)
-            )
-            
-        # Tích hợp DropPath
+        # --- Fusion: Hợp nhất hai nhánh ---
+        # Concatenate: (N, split_channels, H, W) + (N, split_channels, H, W) -> (N, channels, H, W)
+        # Conv 1x1 để trộn thông tin và phục hồi số kênh ban đầu
+        self.fusion = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(channels),
+            nn.Mish(inplace=True)
+        )
+        
+        # --- Coordinate Attention ---
+        # Thay SEBlock, tập trung vào thông tin vị trí không gian
+        self.coord_attn = CoordinateAttention(channels, reduction=32)
+        
+        # --- DropPath ---
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.final_relu = nn.ReLU(inplace=True)
-
+    
     def forward(self, x):
-        residual = self.shortcut(x)
-        x = self.ghost_expand(x)
-        x = self.dw_conv(x)
-        x = self.se(x)
-        x = self.ghost_proj(x)
+        """
+        Args:
+            x: Input tensor với shape (N, channels, H, W)
+        Returns:
+            Output tensor với shape (N, channels, H, W)
+        """
+        identity = x
         
-        # Apply DropPath
-        x = self.drop_path(x) + residual
-        x = self.final_relu(x)
-        return x
+        # --- Split: Chia thành 2 nhánh channels bằng nhau ---
+        x_local, x_remote = torch.chunk(x, 2, dim=1)  # Mỗi nhánh: (N, channels//2, H, W)
+        
+        # --- Dual Transformation ---
+        # Nhánh Local: Cận chiến, mối quan hệ liền kề
+        x_local = self.local_conv(x_local)
+        
+        # Nhánh Remote: Tầm xa, đường chéo dài, kiểm soát hàng/cột
+        x_remote = self.remote_conv(x_remote)
+        
+        # --- Fusion: Hợp nhất ---
+        x_fused = torch.cat([x_local, x_remote], dim=1)  # (N, channels, H, W)
+        x_fused = self.fusion(x_fused)
+        
+        # --- Coordinate Attention ---
+        # "Cột nào đang mở", "Hàng nào đang bị phong tỏa"
+        x_attn = self.coord_attn(x_fused)
+        
+        # --- Residual Connection ---
+        x_out = self.drop_path(x_attn) + identity
+        
+        return x_out
