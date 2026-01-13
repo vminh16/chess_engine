@@ -1,0 +1,85 @@
+============================================================
+CHESS ENGINE BENCHMARK RESULTS
+============================================================
+
+Baseline: PyTorch Original Model
+Model Path: model/param_model/PhantomChessNet.pth
+Search Depth: 4
+Epsilon: 0.5
+Device: cpu
+
+============================================================
+NPS (Nodes Per Second) Results
+============================================================
+
+Average NPS: 225.57 nodes/s
+
+Starting Position (Opening)
+  FEN: rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1
+  NPS: 246.21 nodes/s
+  Total Nodes: 1804
+  Elapsed Time: 7.3272s
+
+Italian Game (Opening)
+  FEN: r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4
+  NPS: 151.66 nodes/s
+  Total Nodes: 9860
+  Elapsed Time: 65.0142s
+
+Sicilian Defense (Opening)
+  FEN: rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2
+  NPS: 238.0 nodes/s
+  Total Nodes: 1640
+  Elapsed Time: 6.8907s
+
+Complex Middle Game 1 (Middle Game)
+  FEN: r2qkb1r/pp2nppp/2n1p3/3pP3/3P1P2/2N2N2/PPP3PP/R1BQKB1R w KQkq - 0 8
+  NPS: 170.54 nodes/s
+  Total Nodes: 27274
+  Elapsed Time: 159.9312s
+
+Complex Middle Game 2 (Middle Game)
+  FEN: r1bqkb1r/pp3ppp/2n1pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R w KQkq - 0 6
+  NPS: 145.07 nodes/s
+  Total Nodes: 20568
+  Elapsed Time: 141.7803s
+
+Tactical Position (Middle Game)
+  FEN: r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 4 4
+  NPS: 144.98 nodes/s
+  Total Nodes: 10136
+  Elapsed Time: 69.9119s
+
+Attacking Position (Middle Game)
+  FEN: r2qkb1r/pp2nppp/2n1p3/3pP3/3P1P2/2N2N2/PPP3PP/R1BQKB1R w KQkq - 0 8
+  NPS: 169.18 nodes/s
+  Total Nodes: 27274
+  Elapsed Time: 161.2114s
+
+King and Pawn Endgame (Endgame)
+  FEN: 8/8/8/4k3/4P3/8/4K3/8 w - - 0 1
+  NPS: 344.65 nodes/s
+  Total Nodes: 208
+  Elapsed Time: 0.6035s
+
+Rook Endgame (Endgame)
+  FEN: 8/8/8/8/2k5/8/2K5/4R3 w - - 0 1
+  NPS: 304.35 nodes/s
+  Total Nodes: 1571
+  Elapsed Time: 5.1618s
+
+Queen Endgame (Endgame)
+  FEN: 8/8/8/3k4/3Q4/8/3K4/8 w - - 0 1
+  NPS: 341.05 nodes/s
+  Total Nodes: 890
+  Elapsed Time: 2.6096s
+
+============================================================
+Time per Inference Results
+============================================================
+
+Batch Size 1: 6.8622 ms
+Batch Size 8: 14.3285 ms
+Batch Size 16: 18.2406 ms
+Batch Size 32: 27.9516 ms
+Batch Size 64: 52.2552 ms
