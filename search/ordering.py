@@ -12,6 +12,8 @@ from search.see import see_capture
 SCORE_TT_MOVE = 2000000
 SCORE_THREAT_MATE = 1500000
 SCORE_THREAT_PROMO = 1400000
+SCORE_KILLER_1 = 1100000   # Killer move slot 1
+SCORE_KILLER_2 = 1050000   # Killer move slot 2
 SCORE_THREAT_ATTACK = 1200000
 SCORE_DEFENSE = 900000
 SCORE_CAPTURE_GOOD = 600000
@@ -134,66 +136,66 @@ def get_king_distance(board, square, color):
     r2, c2 = king_sq // 8, king_sq % 8
     return max(abs(r1 - r2), abs(c1 - c2))
 
-def get_move_priority(move, board, tt_move=None):
-    # ... (Giữ nguyên các hằng số SCORE...)
-    
-    # 1. TT / PV MOVE
+def get_move_priority(move, board, tt_move=None, ply=0, killer_moves=None, history_table=None):
+    """
+    Tính điểm ưu tiên cho move ordering.
+    Thứ tự: TT > Good Captures > Killers > Quiet với History
+    """
+    # 1. TT / PV MOVE - Ưu tiên cao nhất
     if tt_move is not None and move == tt_move:
         return SCORE_TT_MOVE
 
     is_capture = move.is_capture(board)
     is_promo = move.is_promotion()
     
-    # Check threat sơ bộ (Optional: Nếu quá chậm có thể bỏ qua phần apply_move này cho QS)
-    # Ở đây giữ lại logic Threat cho Main Search Ordering
-    gives_check = False
-    # board.apply_move(move) ... (Code check threat của bạn) ...
+    # 2. Promotions - Ưu tiên rất cao
+    if is_promo:
+        promo_bonus = 0
+        if move.promotion == PieceType.QUEEN:
+            promo_bonus = 900
+        elif move.promotion == PieceType.KNIGHT:
+            promo_bonus = 300  # Under-promotion có thể là mate
+        return SCORE_THREAT_PROMO + promo_bonus
     
-    
-    # Để code chạy nhanh, ta tạm bỏ qua phần check threat nặng nề nếu không cần thiết
-    # Hoặc chỉ check nếu là Quiet Move.
-    
-    # --- LOGIC MỚI CHO DELTA ---
-    
-    # Tính Delta Eval (Thô)
-    delta = calculate_delta_eval(board, move)
-    
-    # Nếu là Capture
+    # 3. Captures - Phân loại bằng SEE
     if is_capture:
-        # SEE (Vẫn cần thiết để lọc nước lỗ)
+        delta = calculate_delta_eval(board, move)
         see_good = see_capture(board, move, threshold=0)
         
-        # MVV-LVA (Tính nhanh)
         victim = board.squares[move.to_square]
         attacker = board.squares[move.from_square]
         victim_val = 100 if move.is_en_passant else (PIECE_VALUES[victim.type] if victim else 0)
         attacker_val = PIECE_VALUES[attacker.type] if attacker else 0
         mvv_lva = victim_val * 10 - attacker_val
         
-        # Phân loại dựa trên SEE và Delta
         if see_good:
-            if delta >= 0:
-                return SCORE_CAPTURE_GOOD + delta + mvv_lva
-            else:
-                # SEE tốt (trao đổi an toàn) nhưng Delta âm (ví dụ thí quân chiến thuật được SEE bảo kê?)
-                # Hoặc đơn giản là Capture Trung tính
-                return SCORE_CAPTURE_NEUTRAL + mvv_lva
+            return SCORE_CAPTURE_GOOD + delta + mvv_lva
         else:
-            # SEE < 0 (Lỗ)
-            # Logic: Đẩy xuống cuối (Bad capture)
-            # Đừng trả về SCORE_IGNORE ở đây nếu muốn Dynamic Threshold bên ngoài xử lý
-            # Trả về điểm rất thấp
-            return SCORE_CAPTURE_WEAK + delta # Delta âm sẽ kéo điểm xuống thêm
+            return SCORE_CAPTURE_WEAK + delta
+    
+    # 4. Killer Moves - Nước yên tĩnh đã gây cutoff ở ply khác
+    if killer_moves is not None and ply < len(killer_moves):
+        if move == killer_moves[ply][0]:
+            return SCORE_KILLER_1
+        if move == killer_moves[ply][1]:
+            return SCORE_KILLER_2
+    
+    # 5. Quiet Moves - Sắp xếp theo History Heuristic + PST
+    delta = calculate_delta_eval(board, move)
+    history_score = 0
+    
+    if history_table is not None:
+        color_idx = 0 if board.current_turn == Color.WHITE else 1
+        history_score = history_table[color_idx][move.from_square][move.to_square]
+    
+    return SCORE_QUIET + delta + history_score
 
-    # Non-capture (Quiet)
-    # Dùng delta (chủ yếu là pos_delta của Knight/King) để sort nhẹ
-    return SCORE_QUIET + delta
 
-def sort_moves_priority(moves, board, tt_move=None):
+def sort_moves_priority(moves, board, tt_move=None, ply=0, killer_moves=None, history_table=None):
+    """Sắp xếp nước đi theo điểm ưu tiên"""
     scored_moves = []
     for move in moves:
-        # Lưu ý: Cần tối ưu việc gọi get_move_priority đừng apply_move quá nhiều
-        score = get_move_priority(move, board, tt_move)
+        score = get_move_priority(move, board, tt_move, ply, killer_moves, history_table)
         scored_moves.append((score, move))
     
     scored_moves.sort(key=lambda x: x[0], reverse=True)

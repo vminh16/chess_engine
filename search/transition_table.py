@@ -19,6 +19,10 @@ class TranspositionTable:
     def __init__(self, size_limit=1000000):
         self.table = {}
         self.size_limit = size_limit
+        self.current_age = 0  # Dùng để đánh dấu thế hệ tìm kiếm
+        
+        # Seed cố định để Zobrist keys nhất quán giữa các lần chạy
+        random.seed(12345)
         
         # 1. Piece-Square: 64 ô x 12 loại quân
         self.zobrist_pieces = [[random.getrandbits(64) for _ in range(12)] for _ in range(64)]
@@ -28,6 +32,9 @@ class TranspositionTable:
         self.zobrist_castling = [random.getrandbits(64) for _ in range(16)]
         # 4. En Passant: 8 cột (files)
         self.zobrist_en_passant = [random.getrandbits(64) for _ in range(8)]
+        
+        # Reset seed để không ảnh hưởng random khác
+        random.seed()
 
     def _get_castling_index(self, castling_rights):
         """Chuyển đổi dict lồng nhau của Board sang bitmask 0-15"""
@@ -66,41 +73,77 @@ class TranspositionTable:
 
     def store(self, hash_key, depth, value, flag, age, best_move=None, static_eval=None):
         """
-        Lưu trạng thái vào bảng băm.
-        static_eval: Giá trị đánh giá tĩnh (NN output) để cache lại.
+        Lưu trạng thái vào bảng băm với replacement policy thông minh.
         """
+        # --- REPLACEMENT POLICY CẢI TIẾN ---
+        # Khi đầy, xóa 25% entries cũ nhất thay vì xóa hết
         if len(self.table) >= self.size_limit:
-            self.table.clear() 
+            self._evict_old_entries()
 
         existing = self.table.get(hash_key)
         
-        # Logic cập nhật:
-        # 1. Luôn ưu tiên lưu nếu depth mới >= depth cũ
-        # 2. Hoặc nếu entry cũ đã quá cũ (age chênh lệch)
-        # 3. Đối với static_eval: Nếu entry cũ chưa có static_eval mà entry mới có, thì cập nhật thêm vào.
-        
         if existing is None:
+            # Entry mới - lưu ngay
             self.table[hash_key] = {
                 'value': value,
                 'depth': depth,
                 'flag': flag,
                 'age': age, 
                 'best_move': best_move,
-                'static_eval': static_eval # Lưu thêm cache NN
+                'static_eval': static_eval
             }
         else:
-            # Nếu chỉ muốn cập nhật static_eval mà không ghi đè search result quan trọng
-            if static_eval is not None:
+            # Entry đã tồn tại - quyết định có ghi đè không
+            
+            # Luôn cập nhật static_eval nếu có
+            if static_eval is not None and existing['static_eval'] is None:
                 existing['static_eval'] = static_eval
             
-            # Chỉ ghi đè thông tin search (score, flag, best_move) nếu kết quả mới "xịn" hơn (depth cao hơn)
-            if depth >= existing['depth'] or age > existing['age']:
+            # Điều kiện ghi đè search result:
+            # 1. Depth mới >= depth cũ (thông tin chất lượng hơn)
+            # 2. Entry cũ từ search trước (age cũ hơn 2 thế hệ)
+            # 3. Flag EXACT luôn được ưu tiên hơn BOUND
+            should_replace = False
+            
+            if depth > existing['depth']:
+                should_replace = True
+            elif depth == existing['depth']:
+                # Cùng depth: EXACT > BOUND
+                if flag == TranspositionTable.EXACT and existing['flag'] != TranspositionTable.EXACT:
+                    should_replace = True
+                # Hoặc age mới hơn
+                elif age > existing['age'] + 1:
+                    should_replace = True
+            elif age > existing['age'] + 2:
+                # Entry quá cũ, ghi đè dù depth thấp hơn
+                should_replace = True
+            
+            if should_replace:
                 existing['value'] = value
                 existing['depth'] = depth
                 existing['flag'] = flag
                 existing['age'] = age
                 if best_move is not None:
                     existing['best_move'] = best_move
+    
+    def _evict_old_entries(self):
+        """Xóa 25% entries cũ nhất để giải phóng bộ nhớ"""
+        if not self.table:
+            return
+        
+        # Tìm entries cũ nhất dựa trên age và depth
+        entries = [(k, v['age'], v['depth']) for k, v in self.table.items()]
+        # Sắp xếp: age thấp (cũ) trước, depth thấp trước
+        entries.sort(key=lambda x: (x[1], x[2]))
+        
+        # Xóa 25% entries đầu tiên
+        num_to_remove = len(entries) // 4
+        for i in range(num_to_remove):
+            del self.table[entries[i][0]]
+    
+    def new_search(self):
+        """Gọi khi bắt đầu search mới (iterative deepening loop)"""
+        self.current_age += 1
 
     def lookup(self, hash_key):
         return self.table.get(hash_key)

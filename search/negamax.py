@@ -25,69 +25,154 @@ import time
 
 PATH_DATASET = 'data/data_set_v1/dataset_full.npz'
 PATH_MODEL = "model/param_model/PhantomChessNet.pth"
+
 # Initialize transposition table
 TT = TranspositionTable()    
 
+# --- Hằng số Search ---
 MATE_SCORE = 10000
 MATE_THRESHOLD = 9000
 MAX_QS_PLY = 100
 
-# Chỉ số tương ứng: 0:None, 1:PAWN, 2:KNIGHT, 3:BISHOP, 4:ROOK, 5:QUEEN, 6:KING
+# Giá trị quân: 0:None, 1:PAWN, 2:KNIGHT, 3:BISHOP, 4:ROOK, 5:QUEEN, 6:KING
 PIECE_VALUES = [0, 100, 300, 310, 500, 900, 10000]
+
+# --- Futility Pruning Margins ---
+# Margin cho mỗi depth (centipawn). Nếu static_eval + margin < alpha -> prune
+FUTILITY_MARGINS = [0, 100, 200, 300, 400]  # depth 0-4
+
+# --- Null Move Pruning ---
+NULL_MOVE_REDUCTION = 3  # R = 3 cho Null Move
+NULL_MOVE_MIN_DEPTH = 3  # Chỉ áp dụng khi depth >= 3
+
+# --- Killer Moves (2 slots mỗi ply) ---
+MAX_PLY = 128
+killer_moves = [[None, None] for _ in range(MAX_PLY)]
+
+# --- History Heuristic ---
+# history[color][from_sq][to_sq] = score
+history_table = [[[0 for _ in range(64)] for _ in range(64)] for _ in range(2)]
 
 
 def hybrid_evaluate(board, material_eval, epsilon, model, hash_key, tt_entry=None):
     """
     Hàm đánh giá lai: Kết hợp Material và Neural Network.
-    Được tích hợp chặt chẽ với Transposition Table để cache NN.
+    Trả về điểm từ góc nhìn người chơi hiện tại (side-to-move relative).
     """
     nn_eval = None
     
-    # Thử lấy NN eval từ TT nếu có
+    # Thử lấy NN eval từ TT cache
     if tt_entry is not None and tt_entry.get('static_eval') is not None:
         nn_eval = tt_entry['static_eval']
     
-   
     if nn_eval is None:
-        # nn_eval = model.evaluate(encode_board(board))
         nn_eval = model.predict(encode_board(board))
-        # Ta lưu với depth = -1 hoặc logic giữ nguyên các trường khác để chỉ update static_eval
+        # Cache NN eval vào TT để tái sử dụng
         TT.store(hash_key, depth=-1, value=0, flag=TranspositionTable.EXACT, 
                  age=board.fullmove_number, static_eval=nn_eval)
+    
+    # BUG FIX: Kiểm tra epsilon hợp lệ
+    epsilon = max(0.0, min(1.0, epsilon))
+    
+    # Kết hợp material (nhanh) + NN (chính xác)
+    # material_eval đã là side-relative từ static_eval.py
+    # nn_eval từ model cũng đã được flip trong encode_board()
     hybrid_score = (1 - epsilon) * material_eval + epsilon * nn_eval
-    # Negate điểm nếu là lượt đi của Đen
+    
+    # BUG FIX: Chỉ negate nếu material_eval chưa được negate
+    # Kiểm tra: material_evaluate() trả về White-relative, nên cần negate cho Black
     if board.current_turn == Color.BLACK:
         hybrid_score = -hybrid_score
+    
     return hybrid_score
 
 def sort_move_mvv_lva(move, board: Board, tt=None) -> int:
     """Sắp xếp nước đi theo MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)"""
     
-     # Đặc biệt cho phong cấp
+    # BUG FIX: Kiểm tra TT move TRƯỚC - ưu tiên cao nhất
+    if tt is not None and tt == move:
+        return 1000000
+    
+    # Phong cấp - ưu tiên rất cao
     if move.is_promotion():
-        aggressor_value = PIECE_VALUES[board.get_piece(move.from_square).type]
+        piece = board.get_piece(move.from_square)
+        if piece is None:
+            return 90000
+        aggressor_value = PIECE_VALUES[piece.type]
         promotion_value = PIECE_VALUES[move.promotion]
         return 90000 + (promotion_value * 10) - aggressor_value
 
+    # Nước đi yên tĩnh (không ăn quân)
     if not move.is_capture(board):
         return 0
-    if tt is not None and tt == move:
-        return 1000000  # Nước đi trong bảng chuyển vị có ưu tiên cao nhất
 
+    # En passant
     if move.is_en_passant:
-        victim_value = PIECE_VALUES[1]  # Giá trị của tốt
-        aggressor_value = PIECE_VALUES[1]  # Giá trị của tốt
-        return (victim_value * 10) - aggressor_value
+        return (100 * 10) - 100  # Tốt ăn tốt
 
-    # ăn quân thông thường
-    capture_move = board.get_piece(move.to_square)
-    victim_value = PIECE_VALUES[capture_move.type]
-    aggressor_value = PIECE_VALUES[board.get_piece(move.from_square).type]
+    # Ăn quân thông thường - BUG FIX: Thêm null check
+    captured_piece = board.get_piece(move.to_square)
+    moving_piece = board.get_piece(move.from_square)
+    
+    if captured_piece is None or moving_piece is None:
+        return 0
+    
+    victim_value = PIECE_VALUES[captured_piece.type]
+    aggressor_value = PIECE_VALUES[moving_piece.type]
     return 100000 + (victim_value * 10) - aggressor_value
 
 def move_ordering_capture(moves, board: Board, tt = None):
     """Sắp xếp nước đi ưu tiên các nước ăn quân theo MVV-LVA"""
     return sorted(moves, key=lambda move: sort_move_mvv_lva(move, board, tt), reverse=True)
+
+
+def update_killer_move(move, ply):
+    """Lưu nước đi yên tĩnh gây cắt beta vào Killer table"""
+    if ply >= MAX_PLY:
+        return
+    # Không lưu nếu đã có trong slot 1
+    if killer_moves[ply][0] == move:
+        return
+    # Đẩy slot 1 xuống slot 2, lưu mới vào slot 1
+    killer_moves[ply][1] = killer_moves[ply][0]
+    killer_moves[ply][0] = move
+
+
+def update_history(move, color, depth):
+    """Cập nhật history heuristic khi nước đi gây cắt beta"""
+    color_idx = 0 if color == Color.WHITE else 1
+    # Thưởng = depth^2 để ưu tiên nước đi từ depth cao
+    bonus = depth * depth
+    history_table[color_idx][move.from_square][move.to_square] += bonus
+    # Giới hạn để tránh overflow
+    if history_table[color_idx][move.from_square][move.to_square] > 10000:
+        # Aging: Giảm tất cả xuống 50%
+        for i in range(64):
+            for j in range(64):
+                history_table[color_idx][i][j] //= 2
+
+
+def get_history_score(move, color):
+    """Lấy điểm history cho nước đi"""
+    color_idx = 0 if color == Color.WHITE else 1
+    return history_table[color_idx][move.from_square][move.to_square]
+
+
+def is_killer_move(move, ply):
+    """Kiểm tra nước đi có trong Killer table"""
+    if ply >= MAX_PLY:
+        return False
+    return move == killer_moves[ply][0] or move == killer_moves[ply][1]
+
+
+def has_non_pawn_material(board, color):
+    """Kiểm tra còn quân lớn (không phải tốt/vua) - dùng cho Null Move"""
+    for piece in board.squares:
+        if piece and piece.color == color:
+            if piece.type in [PieceType.KNIGHT, PieceType.BISHOP, 
+                             PieceType.ROOK, PieceType.QUEEN]:
+                return True
+    return False
 
 def quiescence_search(board: Board, alpha: float, beta: float,
                       epsilon: float, model: NeuralNetwork, ply: int) -> float:
@@ -200,7 +285,7 @@ def negamax(board: Board, depth: int, alpha: float, beta: float,
     hash_key = TT.compute_hash(board)
     entry = TT.lookup(hash_key)
     
-    static_eval = entry['static_eval'] if entry is not None else None
+    # BUG FIX: Xóa dòng trùng lặp
     static_eval = entry['static_eval'] if entry is not None else None
     
     # Nếu chưa có static_eval, hãy tính toán ngay.
@@ -232,63 +317,123 @@ def negamax(board: Board, depth: int, alpha: float, beta: float,
         
     
     if depth <= 0:
-        #return material_evaluate(board)
         return quiescence_search(board, alpha, beta, epsilon, model, ply)
     
+    # --- NULL MOVE PRUNING ---
+    # Điều kiện: Không bị chiếu, còn quân lớn, depth đủ, không ở PV node
+    if (depth >= NULL_MOVE_MIN_DEPTH and 
+        not is_in_check(board, board.current_turn) and
+        has_non_pawn_material(board, board.current_turn) and
+        static_eval >= beta):
+        
+        # Thực hiện null move (bỏ lượt)
+        board.current_turn = Color.BLACK if board.current_turn == Color.WHITE else Color.WHITE
+        
+        # Tìm kiếm với depth giảm R
+        null_score = -negamax(board, depth - 1 - NULL_MOVE_REDUCTION, 
+                              -beta, -beta + 1, epsilon, model, ply + 1)
+        
+        # Hoàn tác null move
+        board.current_turn = Color.BLACK if board.current_turn == Color.WHITE else Color.WHITE
+        
+        # Nếu vẫn >= beta sau khi bỏ lượt -> vị trí quá tốt, cắt luôn
+        if null_score >= beta:
+            # Tránh trả về mate score từ null move
+            if null_score > MATE_THRESHOLD:
+                null_score = beta
+            return null_score
+    
+    # --- FUTILITY PRUNING SETUP ---
+    # Nếu ở depth thấp và static_eval quá kém -> có thể prune quiet moves
+    futility_pruning = False
+    if depth <= 4 and not is_in_check(board, board.current_turn):
+        margin = FUTILITY_MARGINS[depth] if depth < len(FUTILITY_MARGINS) else 400
+        if static_eval + margin <= alpha:
+            futility_pruning = True
     
     move_gen = MoveGenerator(board)
     moves = move_gen.generate_legal_moves()
-    moves = sort_moves_priority(moves, board, tt_move=best_move_tt)
+    # Truyền killer_moves và history_table để sort tốt hơn
+    moves = sort_moves_priority(moves, board, tt_move=best_move_tt, 
+                                ply=ply, killer_moves=killer_moves, 
+                                history_table=history_table)
 
     if not moves:
         if is_in_check(board, board.current_turn):
-            return -(MATE_SCORE - ply) # Gần gốc hơn thì điểm âm nặng hơn
-        return 0.0 # Hòa
+            return -(MATE_SCORE - ply)  # Checkmate: gần gốc = thắng nhanh hơn
+        return 0.0  # Stalemate = hòa
+    
     max_score = -float('inf')
+    best_move_at_node = None  # BUG FIX: Khởi tạo để tránh UnboundLocalError
 
     # Biến kiểm tra bị chiếu (để truyền vào hàm LMR)
     in_check = is_in_check(board, board.current_turn)
     
     for i, move in enumerate(moves):
-        # Chỉ tính gives_check khi thực sự cần cho LMR (i >= 4)
-        
         is_capture = move.is_capture(board)
+        is_promo = move.is_promotion()
         gives_check = False
+        
+        # --- FUTILITY PRUNING (cho quiet moves) ---
+        # Prune nếu: depth thấp, không capture, không promo, không killer
+        if futility_pruning and i > 0:  # Không prune nước đầu tiên
+            if not is_capture and not is_promo and not is_killer_move(move, ply):
+                # Kiểm tra nhanh xem có gây chiếu không
+                board.apply_move(move)
+                gives_check = is_in_check(board, board.current_turn)
+                board.undo_move()
+                
+                if not gives_check:
+                    continue  # Bỏ qua nước đi này
         
         # Logic LMR
         R = 0
-        # Chỉ tính toán LMR cho các nước đi muộn (Move 4+) để tiết kiệm CPU
-        if depth >= 3 and i >= 3 and not in_check and not move.is_promotion():
-            # Bây giờ mới tốn tiền tính gives_check
-            board.apply_move(move)
-            gives_check = is_in_check(board, board.current_turn)
-            board.undo_move()
+        # Chỉ tính toán LMR cho các nước đi muộn (Move 4+)
+        if depth >= 3 and i >= 3 and not in_check and not is_promo:
+            # Tính gives_check nếu chưa tính
+            if not gives_check:
+                board.apply_move(move)
+                gives_check = is_in_check(board, board.current_turn)
+                board.undo_move()
             
             if not gives_check:
                 # Tính SEE và R
                 see_result = -1
                 if is_capture:
-                     # Gọi SEE
-                    if see_capture(board, move, threshold=0): see_result = 1
+                    if see_capture(board, move, threshold=0): 
+                        see_result = 1
                 
                 # Gọi hàm tính R
                 R = calculate_lmr_reduction(i, depth, move, board, is_capture, 
                                             see_result, in_check, static_eval, alpha, beta)
+                
+                # Giảm R cho killer moves (chúng đã tốt ở ply khác)
+                if is_killer_move(move, ply):
+                    R = max(0, R - 1)
+                
+                # Giảm R cho nước có history score cao
+                if get_history_score(move, board.current_turn) > 1000:
+                    R = max(0, R - 1)
         
         # --- BẮT ĐẦU PVS SEARCH ---
         board.apply_move(move)
         score = -float('inf')
         
         if i == 0:
+            # Nước đi đầu tiên: Tìm kiếm full window
             score = -negamax(board, depth - 1, -beta, -alpha, epsilon, model, ply + 1)
         else:
-            # LMR Search
+            # PVS + LMR: Tìm kiếm với cửa sổ hẹp (null window) và giảm độ sâu
             score = -negamax(board, depth - 1 - R, -alpha - 1, -alpha, epsilon, model, ply + 1)
             
-            # Re-search logic (như cũ)
+            # Re-search 1: Nếu LMR thất bại (score > alpha), thử lại full depth
             if score > alpha and R > 0:
                 score = -negamax(board, depth - 1, -alpha - 1, -alpha, epsilon, model, ply + 1)
-            if score > alpha and score < beta:
+            
+            # Re-search 2: Nếu null window thất bại, cần full window search
+            # BUG FIX: Điều kiện phải là (score > alpha) thay vì (score > alpha and score < beta)
+            # vì nếu score >= beta thì không cần re-search, sẽ cắt ngay
+            if score > alpha:
                 score = -negamax(board, depth - 1, -beta, -alpha, epsilon, model, ply + 1)
         
         board.undo_move()
@@ -300,15 +445,22 @@ def negamax(board: Board, depth: int, alpha: float, beta: float,
         if max_score > alpha:
             alpha = max_score
         if alpha >= beta:
+            # --- Cắt Beta: Update Killer và History ---
+            if not is_capture:  # Chỉ lưu quiet moves
+                update_killer_move(move, ply)
+                update_history(move, board.current_turn, depth)
             break
    
-    # save to transposition table
+    # Lưu vào TT - BUG FIX: Logic flag bị đảo ngược
+    # LOWERBOUND: Ta biết score >= max_score (fail-high, cắt beta)
+    # UPPERBOUND: Ta biết score <= max_score (fail-low, không cải thiện alpha)  
+    # EXACT: Tìm được giá trị chính xác trong cửa sổ [alpha, beta]
     if max_score <= alpha_orig:
-        flag = TranspositionTable.UPPERBOUND
+        flag = TranspositionTable.UPPERBOUND  # Không cải thiện được alpha
     elif max_score >= beta:
-        flag = TranspositionTable.LOWERBOUND
+        flag = TranspositionTable.LOWERBOUND  # Cắt beta, biết score >= max_score
     else:
-        flag = TranspositionTable.EXACT
+        flag = TranspositionTable.EXACT  # Giá trị nằm trong cửa sổ
     tt_val = max_score
     
     if max_score > MATE_THRESHOLD:
@@ -320,51 +472,119 @@ def negamax(board: Board, depth: int, alpha: float, beta: float,
 
 
 def find_best_move(board: Board, depth: int, epsilon: float = 0.5, model: NeuralNetwork = None, verbose: bool = True):
+    """
+    Tìm nước đi tốt nhất với Iterative Deepening + Aspiration Windows.
+    """
     if model is None:
         model = NeuralNetwork()
         model.load_model(PATH_MODEL)
     
     best_move = None
-    alpha = -float('inf')
-    beta = float('inf')
+    prev_score = 0  # Score từ depth trước cho Aspiration Windows
     
-    # Sử dụng Iterative Deepening (Tăng dần độ sâu)
-    # Giúp Transposition Table có dữ liệu để Move Ordering tốt hơn
+    # --- ASPIRATION WINDOW PARAMETERS ---
+    ASPIRATION_DELTA = 50  # Bắt đầu với cửa sổ ±50 centipawn
+    
+    # Reset killer moves cho search mới
+    global killer_moves
+    killer_moves = [[None, None] for _ in range(MAX_PLY)]
+    
+    # Đánh dấu search mới cho TT
+    TT.new_search()
+    
     for current_depth in range(1, depth + 1):
         move_gen = MoveGenerator(board)
         moves = move_gen.generate_legal_moves()
         
-        # Lấy best move từ TT của depth trước để sort lên đầu
+        if not moves:
+            return None  # Không có nước đi hợp lệ
+        
+        # Lấy best move từ TT/depth trước để sort lên đầu
         hash_key = TT.compute_hash(board)
         tt_entry = TT.lookup(hash_key)
         tt_move = tt_entry['best_move'] if tt_entry else best_move
         
-        # Sort moves
         moves = sort_moves_priority(moves, board, tt_move=tt_move)
+        
+        # --- ASPIRATION WINDOWS ---
+        # Depth 1-2: Full window (chưa có thông tin)
+        # Depth 3+: Dùng cửa sổ hẹp xung quanh score trước
+        if current_depth <= 2:
+            alpha = -float('inf')
+            beta = float('inf')
+        else:
+            alpha = prev_score - ASPIRATION_DELTA
+            beta = prev_score + ASPIRATION_DELTA
         
         current_best_move = None
         current_best_score = -float('inf')
         
-        # Reset Alpha Beta cho mỗi depth mới
-        alpha = -float('inf')
+        # Số lần thử lại nếu fail-high/fail-low
+        retries = 0
+        max_retries = 3
         
-        for move in moves:
-            board.apply_move(move)
-            # QUAN TRỌNG: Truyền -beta, -alpha vào để duy trì chuỗi pruning
-            score = -negamax(board, current_depth - 1, -beta, -alpha, epsilon, model, ply=1)
-            board.undo_move()
+        while retries < max_retries:
+            current_best_score = -float('inf')
             
-            if score > current_best_score:
-                current_best_score = score
-                current_best_move = move
-            
-            # Cập nhật Alpha ngay tại Root
-            if score > alpha:
-                alpha = score
+            for i, move in enumerate(moves):
+                board.apply_move(move)
                 
+                if i == 0:
+                    # Full window cho nước đầu tiên
+                    score = -negamax(board, current_depth - 1, -beta, -alpha, epsilon, model, ply=1)
+                else:
+                    # PVS: Null window trước
+                    score = -negamax(board, current_depth - 1, -alpha - 1, -alpha, epsilon, model, ply=1)
+                    if score > alpha and score < beta:
+                        # Re-search với full window
+                        score = -negamax(board, current_depth - 1, -beta, -alpha, epsilon, model, ply=1)
+                
+                board.undo_move()
+                
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best_move = move
+                
+                if score > alpha:
+                    alpha = score
+                
+                # Fail-high trong aspiration window
+                if alpha >= beta:
+                    break
+            
+            # Kiểm tra Aspiration Window
+            if current_depth > 2:
+                if current_best_score <= prev_score - ASPIRATION_DELTA:
+                    # Fail-low: Mở rộng alpha
+                    alpha = -float('inf')
+                    retries += 1
+                    if verbose:
+                        print(f"  Depth {current_depth}: Fail-low, re-search...")
+                    continue
+                elif current_best_score >= prev_score + ASPIRATION_DELTA:
+                    # Fail-high: Mở rộng beta
+                    beta = float('inf')
+                    retries += 1
+                    if verbose:
+                        print(f"  Depth {current_depth}: Fail-high, re-search...")
+                    continue
+            
+            # Tìm kiếm thành công
+            break
+        
         best_move = current_best_move
+        prev_score = current_best_score
+        
         if verbose:
-            print(f"Depth {current_depth} finished. Best: {best_move} Score: {current_best_score}")
+            # Hiển thị thông tin đẹp hơn
+            score_str = f"{current_best_score:.2f}"
+            if current_best_score > MATE_THRESHOLD:
+                mate_in = (MATE_SCORE - current_best_score + 1) // 2
+                score_str = f"M{mate_in}"
+            elif current_best_score < -MATE_THRESHOLD:
+                mate_in = (MATE_SCORE + current_best_score + 1) // 2
+                score_str = f"-M{mate_in}"
+            print(f"Depth {current_depth}: {best_move} | Score: {score_str}")
 
     return best_move
 
