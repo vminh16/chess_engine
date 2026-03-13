@@ -8,9 +8,8 @@ class ContextGatedHead(nn.Module):
     Tách biệt luồng xử lý nhưng có sự tương tác (Gated).
     Nhánh Global quyết định 'vùng nào quan trọng' để nhánh Spatial tập trung.
     """
-    def __init__(self, in_channels=128, hidden_dim=64, output_mode="tanh"):
+    def __init__(self, in_channels=128, hidden_dim=64):
         super(ContextGatedHead, self).__init__()
-        self.output_mode = output_mode
         
         # --- 1. Global Context Branch (Strategy) ---
         # Input: (B, C, 8, 8) -> Output: (B, C, 1, 1) Gate
@@ -61,9 +60,4 @@ class ContextGatedHead(nn.Module):
         
         # --- D. Final Prediction ---
         out = s_feat.flatten(1) # Flatten từ dim 1 trở đi -> (B, hidden_dim*64)
-        logits = self.fc_out(out)
-        if self.output_mode == "tanh":
-            return torch.tanh(logits)
-        if self.output_mode == "linear":
-            return logits
-        raise ValueError(f"Unsupported output_mode: {self.output_mode}")
+        return torch.tanh(self.fc_out(out))

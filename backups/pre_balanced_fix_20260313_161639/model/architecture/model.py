@@ -10,9 +10,8 @@ class DGRNChessNet(nn.Module):
     Dilated-Gated ResNet (DGRN) for Chess Engines.
     Đặc điểm: Giữ nguyên resolution 8x8, tầm nhìn đa dạng (Dual-Focus).
     """
-    def __init__(self, num_blocks=12, hidden_dim=128, input_channels=18, drop_path_rate=0.1, output_mode="tanh"):
+    def __init__(self, num_blocks=12, hidden_dim=128, input_channels=18, drop_path_rate=0.1):
         super(DGRNChessNet, self).__init__()
-        self.output_mode = output_mode
         
         # --- Stem: Entry Point ---
         # Chuyển đổi input thô (18 kênh) sang không gian đặc trưng
@@ -32,11 +31,7 @@ class DGRNChessNet(nn.Module):
         ])
         
         # --- Head: Evaluation ---
-        self.head = ContextGatedHead(
-            in_channels=hidden_dim,
-            hidden_dim=hidden_dim // 2,
-            output_mode=output_mode,
-        )
+        self.head = ContextGatedHead(in_channels=hidden_dim, hidden_dim=hidden_dim // 2)
         
         self._init_weights()
 
@@ -82,35 +77,3 @@ class DGRNChessNet(nn.Module):
             x = x.to(device)
             output = self.forward(x)
         return output.item()
-
-    def save_model(self, path):
-        payload = {
-            "state_dict": self.state_dict(),
-            "output_mode": self.output_mode,
-            "arch": "DGRNChessNet",
-        }
-        torch.save(payload, path)
-
-    def load_model(self, path):
-        checkpoint = torch.load(path, map_location="cpu")
-        if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-            self.output_mode = checkpoint.get("output_mode", self.output_mode)
-            self.head.output_mode = self.output_mode
-            self.load_state_dict(checkpoint["state_dict"])
-        else:
-            # Backward compatibility for old pure state_dict checkpoints.
-            self.load_state_dict(checkpoint)
-        self.eval()
-
-
-class PhantomChessNet(DGRNChessNet):
-    """Compatibility alias used by app/search with tuned defaults."""
-
-    def __init__(self, output_mode="tanh"):
-        super().__init__(
-            num_blocks=20,
-            hidden_dim=256,
-            input_channels=18,
-            drop_path_rate=0.1,
-            output_mode=output_mode,
-        )

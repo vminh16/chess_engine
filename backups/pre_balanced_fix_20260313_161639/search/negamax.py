@@ -467,7 +467,7 @@ def negamax(board: Board, depth: int, alpha: float, beta: float,
     return max_score
 
 
-def find_best_move(board: Board, depth: int, epsilon: float = 0.2, model: NeuralNetwork = None, verbose: bool = True):
+def find_best_move(board: Board, depth: int, epsilon: float = 0.5, model: NeuralNetwork = None, verbose: bool = True):
     """
     Tìm nước đi tốt nhất với Iterative Deepening + Aspiration Windows.
     """
@@ -591,7 +591,7 @@ if __name__ == "__main__":
     fen_code = "r4knr/p4ppp/2Qpb3/2b3B1/8/2q2N2/P1P2PPP/R4RK1 w - - 0 1"
     board = Board(fen_code)
     start_time = time.time()
-    best_move = find_best_move(board, depth=3, epsilon=0.2, model=model)
+    best_move = find_best_move(board, depth=3, epsilon=0.7, model=model)
     end_time = time.time()
     print(f"Time taken: {end_time - start_time} seconds")
     print(f"Best move: {best_move}")

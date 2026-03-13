@@ -59,27 +59,10 @@ def main():
         Returns:
             parameters: Tham số đã được huấn luyện của mạng nơ-ron.
         """
-    nn = NeuralNetwork(output_mode='linear')
+    nn = NeuralNetwork()
     #vizualize_network(nn)
 
-    train_losses, val_losses = nn.train_model(
-        X_train,
-        y_train,
-        X_val=X_val,
-        y_val=y_val,
-        learning_rate=0.001,
-        epochs=16,
-        batch_size=32,
-        clip_norm=1.0,
-        loss_name='huber',
-        huber_delta=0.1,
-        use_region_weighting=True,
-        region_weights={"center": 1.0, "mid": 0.7, "decisive": 0.4},
-        scheduler_name='cosine_warm_restarts',
-        scheduler_t0=4,
-        scheduler_t_mult=2,
-        scheduler_eta_min=1e-6,
-    )
+    train_losses, val_losses = nn.train_model(X_train, y_train, X_val=X_val, y_val=y_val, learning_rate=0.01, epochs=16, batch_size=32, clip_norm=1.0)
 
     visualize_losses(train_losses, val_losses)
 

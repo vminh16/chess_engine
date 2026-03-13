@@ -16,7 +16,6 @@ except ImportError as e:
 # Load model an toàn
 model = NeuralNetwork()
 PATH_MODEL = os.path.join(os.getcwd(), "model", "nn_parameters.pth") # Đường dẫn tuyệt đối an toàn
-DEFAULT_EPSILON = float(os.environ.get("ENGINE_EPSILON", "0.2"))
 
 if os.path.exists(PATH_MODEL):
     try:
@@ -81,7 +80,7 @@ def main():
                     
                     # Gọi hàm tìm kiếm (Đảm bảo verbose=False để không in linh tinh)
                     # Depth 4 để test nhanh
-                    best_move = find_best_move(board, depth=4, epsilon=DEFAULT_EPSILON, model=model, verbose=False)
+                    best_move = find_best_move(board, depth=4, epsilon=0.7, model=model, verbose=False)
                     
                     if best_move:
                         # Fix format UCI

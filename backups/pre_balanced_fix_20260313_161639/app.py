@@ -12,7 +12,6 @@ from search.negamax import find_best_move
 from model.architecture.model import PhantomChessNet
 
 app = Flask(__name__, template_folder='templates')
-DEFAULT_EPSILON = float(os.environ.get("ENGINE_EPSILON", "0.1"))
 
 # --- KHỞI TẠO MODEL MỘT LẦN DUY NHẤT (Để tiết kiệm thời gian) ---
 print("Loading Neural Network...")
@@ -39,7 +38,7 @@ def get_move():
         
         # 2. Gọi Engine của bạn
         # Lưu ý: depth có thể điều chỉnh, depth=4 là hợp lý cho web nhanh
-        best_move = find_best_move(board, depth=4, epsilon=DEFAULT_EPSILON, model=model)
+        best_move = find_best_move(board, depth=4, epsilon=0.0, model=model)
         
         if best_move:
             # Chuyển đổi move object thành string (ví dụ: "e2e4")
