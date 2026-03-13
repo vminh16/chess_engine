@@ -199,10 +199,13 @@ class NeuralNetwork(nn.Module):
                 with torch.no_grad():
                     val_outputs = self(X_val_tensor)
                     y_val_squeezed = y_val_tensor.squeeze()
-                    val_huber = F.huber_loss(
-                        val_outputs, y_val_squeezed, delta=huber_delta, reduction="mean"
-                    ).item()
-                    val_losses.append(val_huber)
+                    if loss_name.lower() == "huber":
+                        val_loss_value = F.huber_loss(
+                            val_outputs, y_val_squeezed, delta=huber_delta, reduction="mean"
+                        ).item()
+                    else:
+                        val_loss_value = torch.mean((val_outputs - y_val_squeezed) ** 2).item()
+                    val_losses.append(val_loss_value)
 
                     # Track center-region MSE explicitly (balanced-first goal).
                     val_err = val_outputs - y_val_squeezed
@@ -220,7 +223,7 @@ class NeuralNetwork(nn.Module):
 
                     current_lr = optimizer.param_groups[0]["lr"]
                     print(
-                        f"  lr={current_lr:.2e} val_huber={val_huber:.6f} "
+                        f"  lr={current_lr:.2e} val_loss={val_loss_value:.6f} "
                         f"center_mse={center_mse:.6f} decisive_mse={decisive_mse:.6f}"
                     )
         
