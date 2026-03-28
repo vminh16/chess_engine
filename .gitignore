@@ -27,9 +27,11 @@ Thumbs.db
 *.pth
 *.ckpt
 *.onnx
+*.data
 logs/
 runs/
 outputs/
+data/process/
 
 ####################
 # Tests / cache
