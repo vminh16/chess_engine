@@ -1,0 +1,25 @@
+{
+  "per_query": [
+    {
+      "node_budget": 8000,
+      "elapsed_sec": 0.4610872268676758,
+      "target_value": 0.08810429968944254,
+      "bestmove": "e2e4"
+    },
+    {
+      "node_budget": 32000,
+      "elapsed_sec": 0.4584221839904785,
+      "target_value": 0.061588617176587195,
+      "bestmove": "e2e4"
+    },
+    {
+      "node_budget": 128000,
+      "elapsed_sec": 0.5890927314758301,
+      "target_value": 0.0566060901516576,
+      "bestmove": "e2e4"
+    }
+  ],
+  "one_position_total_sec": 1.5086021423339844,
+  "estimated_positions": 240,
+  "estimated_total_min": 6.0344085693359375
+}

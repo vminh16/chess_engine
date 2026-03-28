@@ -1,0 +1,8 @@
+{
+  "init_ckpt_path": "C:\\Users\\USER\\Downloads\\dgrn_5m_v3_stage2_polish_run1\\ckpt_best.pt",
+  "num_shards": -1,
+  "batch_size": 2560,
+  "num_cached_shards": 80,
+  "cache_compatible_with_existing_manifest": false,
+  "elapsed_sec": 2064.4233655929565
+}

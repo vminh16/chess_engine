@@ -1,0 +1,7 @@
+{
+  "total_samples": 4000000,
+  "total_near_zero_samples": 2200000,
+  "near_zero_fraction": 0.55,
+  "mean_weight_all": 0.8713645048828125,
+  "mean_weight_near_zero": 0.7661172824928977
+}

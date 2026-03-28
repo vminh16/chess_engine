@@ -1,0 +1,3 @@
+label,epoch,loss_mode,output_mode,y_loss_weight_start,y_loss_weight_end,y_loss_ramp_epochs,z_loss_beta,z_huber_delta,lr,weight_decay,drop_path_rate
+best,1,,,,,,,,,,
+latest,2,,,,,,,,,,

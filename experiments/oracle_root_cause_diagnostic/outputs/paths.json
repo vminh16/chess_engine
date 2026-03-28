@@ -1,0 +1,12 @@
+{
+  "project_root": "C:\\Users\\USER\\Desktop\\chess_engine",
+  "run_dir": "C:\\Users\\USER\\Downloads\\dgrn_5m_v3_stage2_polish_run1",
+  "data_root": "C:\\Users\\USER\\Desktop\\chess_engine\\data\\process",
+  "experiment_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\oracle_root_cause_diagnostic",
+  "output_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\oracle_root_cause_diagnostic\\outputs",
+  "plots_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\oracle_root_cause_diagnostic\\outputs\\plots",
+  "reports_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\oracle_root_cause_diagnostic\\outputs\\reports",
+  "cache_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\oracle_root_cause_diagnostic\\outputs\\cache",
+  "checkpoints_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\oracle_root_cause_diagnostic\\outputs\\checkpoints",
+  "split_pred_cache_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\oracle_root_cause_diagnostic\\outputs\\cache\\split_preds"
+}

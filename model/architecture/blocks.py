@@ -109,7 +109,8 @@ class DFGBlock(nn.Module):
             nn.Mish(inplace=True)
         )
         
-        self.coord_attn = CoordinateAttention(channels, reduction=32)
+        # P4 Fix: CoordAttn bottleneck mitigation, reduction 32 -> 8
+        self.coord_attn = CoordinateAttention(channels, reduction=8)
         
         # DropPath đã được định nghĩa ở trên
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -120,18 +121,20 @@ class DFGBlock(nn.Module):
         # Split
         x_local, x_remote = torch.chunk(x, 2, dim=1)
         
-        # Transform
+        # Transform (Dilation 1 & 2)
         x_local = self.local_conv(x_local)
         x_remote = self.remote_conv(x_remote)
         
-        # Fuse
-        x_fused = torch.cat([x_local, x_remote], dim=1)
-        x_fused = self.fusion(x_fused)
+        # Concat local and remote features
+        x_concat = torch.cat([x_local, x_remote], dim=1)
         
-        # Attend
-        x_attn = self.coord_attn(x_fused)
+        # Attend BEFORE Fuse (P5 Fix: Avoid dead gradients from zero-gamma init)
+        x_attn = self.coord_attn(x_concat)
+        
+        # Fuse
+        x_fused = self.fusion(x_attn)
         
         # Residual
-        x_out = self.drop_path(x_attn) + identity
+        x_out = self.drop_path(x_fused) + identity
         
         return x_out

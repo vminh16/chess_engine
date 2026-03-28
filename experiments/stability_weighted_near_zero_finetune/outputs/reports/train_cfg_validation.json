@@ -1,0 +1,8 @@
+{
+  "is_valid": true,
+  "issues": [],
+  "batch_size": 640,
+  "epochs": 1,
+  "learning_rate": 3e-06,
+  "min_lr": 1e-06
+}

@@ -1,0 +1,37 @@
+{
+  "split": "test",
+  "sample_abs_y_edges": [
+    0.0,
+    0.05,
+    0.2,
+    0.5,
+    0.7,
+    1.0
+  ],
+  "sample_per_band": 48,
+  "err_quantiles": [
+    0.3333333333333333,
+    0.6666666666666666
+  ],
+  "oracle_scales": [
+    400.0,
+    600.0,
+    800.0,
+    1200.0
+  ],
+  "stockfish_path": "D:\\stockfish-windows-x86-64-avx2\\stockfish\\stockfish-windows-x86-64-avx2.exe",
+  "stockfish_threads": 1,
+  "stockfish_hash_mb": 32,
+  "stockfish_node_budgets": [
+    8000,
+    32000,
+    128000
+  ],
+  "stockfish_command_pause_ms": 50,
+  "stockfish_timeout_sec": 20.0,
+  "prediction_batch_size": 2048,
+  "sample_seed": 123,
+  "benchmark_train_batch_size": 640,
+  "decode_validation_samples": 64,
+  "subset_num_shards": null
+}

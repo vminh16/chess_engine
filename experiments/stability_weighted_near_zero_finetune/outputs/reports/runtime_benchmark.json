@@ -1,0 +1,9 @@
+{
+  "batch_size": 640,
+  "step_time_sec": 1.4544460773468018,
+  "peak_mem_gb": 3.6004629135131836,
+  "steps_per_epoch": 6250,
+  "train_total_samples": 4000000,
+  "train_num_shards": 80,
+  "epoch_hours_estimate": 2.525079995393753
+}

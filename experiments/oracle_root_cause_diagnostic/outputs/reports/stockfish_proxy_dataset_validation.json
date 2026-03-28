@@ -1,0 +1,32 @@
+{
+  "probe_fen": "r4rk1/b2P2p1/p2Rqn1p/2p2N2/4P3/4B2P/2B1QPP1/6K1 b - - 0 1",
+  "node_budgets": [
+    8000,
+    32000,
+    128000
+  ],
+  "first_bestmoves": [
+    "e6e5",
+    "e6e5",
+    "e6e5"
+  ],
+  "second_bestmoves": [
+    "e6e5",
+    "e6e5",
+    "e6e5"
+  ],
+  "first_targets": [
+    -0.7130362273932255,
+    -0.6953979670996447,
+    -0.708085297112391
+  ],
+  "second_targets": [
+    -0.7130362273932255,
+    -0.6953979670996447,
+    -0.708085297112391
+  ],
+  "bestmove_match": true,
+  "target_match": true,
+  "split": "test",
+  "sample_index": 0
+}

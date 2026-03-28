@@ -1,0 +1,79 @@
+{
+  "gates": {
+    "mse_0.7_max": 0.045,
+    "slope_0.7_min": 0.8,
+    "max_midband_abs_cal_gap_max": 0.2,
+    "false_0.1_0.3_max": 0.05,
+    "false_0.2_0.4_max": 0.02,
+    "center_spread_ratio_0.05_max": 2.0
+  },
+  "root_cause_signals": [
+    "Near-zero search volatility is a likely root cause in the target semantics."
+  ],
+  "posthoc_delta": {
+    "mse_0.7": 0.004179809681715108,
+    "slope_0.7": 0.038506006478906674,
+    "false_decisive_0.1_0.3": 0.018339241094775985,
+    "max_midband_abs_cal_gap": -0.006328714708566663
+  },
+  "stability_report": {
+    "config": {
+      "split": "test",
+      "near_zero_thr": 0.2,
+      "sample_positions": 128,
+      "search_depths": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "max_source_samples": 50000,
+      "source_num_shards": 4
+    },
+    "proxy_diagnostics": {
+      "score_unit": "search_native_normalized_score",
+      "stable_unstable_rule": "lexicographic order on (best_move_changes, sign_flips, vol_range, static_gap)",
+      "q33_vol_range": 0.0,
+      "q67_vol_range": 0.0,
+      "q33_static_gap": 0.0,
+      "q67_static_gap": 0.0,
+      "vol_range_min": 0.0,
+      "vol_range_max": 0.10256410256410256,
+      "vol_range_mean": 0.005208333333333334,
+      "vol_range_std": 0.014518800950000816,
+      "vol_range_unique_count": 6,
+      "static_gap_min": 0.0,
+      "static_gap_max": 0.10256410256410256,
+      "static_gap_mean": 0.009014423076923078,
+      "static_gap_std": 0.020500158556742795,
+      "static_gap_unique_count": 7,
+      "move_change_nonzero_count": 27,
+      "sign_flip_nonzero_count": 12,
+      "is_informative": true
+    },
+    "stable": {
+      "n": 42,
+      "mse": 0.021918101033688093,
+      "mae": 0.09133794930364404,
+      "mean_proxy_vol_range": 0.0,
+      "mean_proxy_static_gap": 0.0,
+      "mean_proxy_best_move_changes": 0.0,
+      "mean_proxy_sign_flips": 0.0,
+      "false_decisive_0.3": 0.023809523809523808,
+      "false_decisive_0.4": 0.023809523809523808
+    },
+    "unstable": {
+      "n": 42,
+      "mse": 0.03531927540094876,
+      "mae": 0.12926589196459168,
+      "mean_proxy_vol_range": 0.015873015873015872,
+      "mean_proxy_static_gap": 0.018315018315018312,
+      "mean_proxy_best_move_changes": 0.7142857142857143,
+      "mean_proxy_sign_flips": 0.47619047619047616,
+      "false_decisive_0.3": 0.11904761904761904,
+      "false_decisive_0.4": 0.047619047619047616
+    }
+  },
+  "pilot_delta_false_0.1_0.3": -0.006519844267534436,
+  "pilot_delta_slope_0.7": -0.00729708685951358
+}

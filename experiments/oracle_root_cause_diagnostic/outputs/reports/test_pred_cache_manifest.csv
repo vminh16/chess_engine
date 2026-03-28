@@ -1,0 +1,11 @@
+split,shard_id,samples,pred_path,cached
+test,0,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00000.npy,False
+test,1,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00001.npy,False
+test,2,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00002.npy,False
+test,3,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00003.npy,False
+test,4,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00004.npy,False
+test,5,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00005.npy,False
+test,6,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00006.npy,False
+test,7,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00007.npy,False
+test,8,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00008.npy,False
+test,9,50000,C:\Users\USER\Desktop\chess_engine\experiments\oracle_root_cause_diagnostic\outputs\cache\split_preds\pred_00009.npy,False

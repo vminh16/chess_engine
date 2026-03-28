@@ -1,0 +1,21 @@
+{
+  "history": [
+    {
+      "epoch": 0,
+      "train_objective": 0.05380448018867522,
+      "train_weighted_mse": 0.054103860530592504,
+      "train_weighted_z_huber": 0.024165770216733218,
+      "train_plain_mse": 0.05073353171095252,
+      "val_mse_0.7": 0.05206197323898264,
+      "val_slope_0.7": 0.6332135038707395,
+      "val_false_0.1_0.3": 0.1130110658124636,
+      "val_false_0.2_0.4": 0.060087631583731795,
+      "val_center_spread_ratio_0.05": 9.096657842819493,
+      "val_max_midband_abs_cal_gap": 0.25170097259528973,
+      "gate_score": 0.213189373326352,
+      "lr": 1.000618957725785e-06,
+      "epoch_time_sec": 7351.62385725975
+    }
+  ],
+  "best_gate_score": 0.213189373326352
+}

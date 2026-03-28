@@ -1,0 +1,62 @@
+{
+  "weight_cfg": {
+    "near_zero_thr": 0.2,
+    "calibration_abs_y_sample_edges": [
+      0.0,
+      0.05,
+      0.1,
+      0.15,
+      0.2
+    ],
+    "sample_per_abs_y_band": 24,
+    "stockfish_path": "D:\\stockfish-windows-x86-64-avx2\\stockfish\\stockfish-windows-x86-64-avx2.exe",
+    "stockfish_threads": 1,
+    "stockfish_hash_mb": 32,
+    "stockfish_node_budgets": [
+      2000,
+      8000,
+      32000
+    ],
+    "stockfish_command_pause_ms": 50,
+    "stockfish_timeout_sec": 15.0,
+    "calibration_seed": 123,
+    "prediction_batch_size": 2560,
+    "weight_abs_y_edges": [
+      0.0,
+      0.025,
+      0.05,
+      0.1,
+      0.15,
+      0.2
+    ],
+    "teacher_abs_err_quantiles": [
+      0.2,
+      0.4,
+      0.6,
+      0.8
+    ],
+    "smoothing_prior": 3.0,
+    "weight_strength": 0.45,
+    "weight_min": 0.55
+  },
+  "train_cfg": {
+    "lambda_y": 0.99,
+    "z_loss_beta": 1.0,
+    "z_huber_delta": 0.5,
+    "target_clamp_eps": 0.001,
+    "learning_rate": 3e-06,
+    "min_lr": 1e-06,
+    "weight_decay": 0.0002,
+    "grad_clip_norm": 1.0,
+    "batch_size": 640,
+    "epochs": 1,
+    "log_every_steps": 200,
+    "seed": 123,
+    "eval_val_samples": 100000,
+    "eval_test_samples": 200000,
+    "eval_val_num_shards": 2,
+    "eval_test_num_shards": 4,
+    "train_num_shards": null
+  },
+  "prediction_cache_split": "train"
+}

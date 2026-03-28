@@ -1,0 +1,43 @@
+{
+  "score_unit": "stockfish_cp_to_tanh_cp600",
+  "stockfish_path": "D:\\stockfish-windows-x86-64-avx2\\stockfish\\stockfish-windows-x86-64-avx2.exe",
+  "stockfish_threads": 1,
+  "stockfish_hash_mb": 32,
+  "stockfish_node_budgets": [
+    2000,
+    8000,
+    32000
+  ],
+  "num_rows": 96,
+  "stable": {
+    "n": 32,
+    "mse": 0.024459782982550603,
+    "mae": 0.1020689468132332,
+    "false_decisive_0.3": 0.09375,
+    "mean_instability_score": 0.2802631578947368,
+    "mean_sf_target_range": 0.024530250116846473,
+    "mean_sf_target_std": 0.010496281444623511,
+    "mean_sf_bestmove_changes": 0.5,
+    "mean_sf_sign_flips": 0.15625,
+    "mean_sf_final_gap_to_train_target": 0.03158699180612795
+  },
+  "unstable": {
+    "n": 32,
+    "mse": 0.024563482025431006,
+    "mae": 0.11106090369867161,
+    "false_decisive_0.3": 0.15625,
+    "mean_instability_score": 0.7143092105263158,
+    "mean_sf_target_range": 0.08971011313481196,
+    "mean_sf_target_std": 0.03895617163937119,
+    "mean_sf_bestmove_changes": 1.0,
+    "mean_sf_sign_flips": 0.1875,
+    "mean_sf_final_gap_to_train_target": 0.040114575665270366
+  },
+  "proxy_diagnostics": {
+    "target_range_unique_count": 96,
+    "target_std_unique_count": 96,
+    "bestmove_changes_nonzero_count": 56,
+    "sign_flip_nonzero_count": 12,
+    "is_informative": true
+  }
+}

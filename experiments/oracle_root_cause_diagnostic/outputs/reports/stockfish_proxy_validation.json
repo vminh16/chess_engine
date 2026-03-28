@@ -1,0 +1,30 @@
+{
+  "probe_fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "node_budgets": [
+    8000,
+    32000,
+    128000
+  ],
+  "first_bestmoves": [
+    "e2e4",
+    "e2e4",
+    "e2e4"
+  ],
+  "second_bestmoves": [
+    "e2e4",
+    "e2e4",
+    "e2e4"
+  ],
+  "first_targets": [
+    0.08810429968944254,
+    0.061588617176587195,
+    0.0566060901516576
+  ],
+  "second_targets": [
+    0.08810429968944254,
+    0.061588617176587195,
+    0.0566060901516576
+  ],
+  "bestmove_match": true,
+  "target_match": true
+}

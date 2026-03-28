@@ -1,0 +1,12 @@
+{
+  "project_root": "C:\\Users\\USER\\Desktop\\chess_engine",
+  "run_dir": "C:\\Users\\USER\\Downloads\\dgrn_5m_v3_stage2_polish_run1",
+  "data_root": "C:\\Users\\USER\\Desktop\\chess_engine\\data\\process",
+  "experiment_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\stability_weighted_near_zero_finetune",
+  "output_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\stability_weighted_near_zero_finetune\\outputs",
+  "plots_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\stability_weighted_near_zero_finetune\\outputs\\plots",
+  "reports_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\stability_weighted_near_zero_finetune\\outputs\\reports",
+  "checkpoints_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\stability_weighted_near_zero_finetune\\outputs\\checkpoints",
+  "cache_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\stability_weighted_near_zero_finetune\\outputs\\cache",
+  "train_pred_cache_dir": "C:\\Users\\USER\\Desktop\\chess_engine\\experiments\\stability_weighted_near_zero_finetune\\outputs\\cache\\train_init_preds"
+}
