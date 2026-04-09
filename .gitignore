@@ -19,6 +19,8 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+.cursor
+.github
 
 ####################
 # ML / Training
@@ -37,3 +39,6 @@ data/process/
 # Tests / cache
 ####################
 .pytest_cache/
+/tmp
+AGENTS.md
+GEMINI.md

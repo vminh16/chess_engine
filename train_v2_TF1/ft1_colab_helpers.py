@@ -54,7 +54,11 @@ class FT1TrainConfig:
     main_batch_size: int = 256
     clean_center_batch_size: int = 32
     ambiguous_center_batch_size: int = 64
-    grad_accum_steps: int = 4
+    grad_accum_steps: int = 2
+    use_amp: bool = True
+    amp_dtype: str = "float16"
+    amp_loss_scale: float = 128.0
+    preload_shard_dtype: str = "auto"
     learning_rate: float = 1.0e-4
     min_lr: float = 1.0e-5
     weight_decay: float = 1.0e-4
@@ -63,7 +67,7 @@ class FT1TrainConfig:
     train_num_shards: Optional[int] = None
     val_num_shards: int = 2
     test_num_shards: int = 4
-    val_max_samples: int = 200_000
+    val_max_samples: int = 100_000
     test_max_samples: int = 200_000
     eval_batch_size: int = 1024
     log_every_steps: int = 200
@@ -76,7 +80,7 @@ class FT1TrainConfig:
     aux_margin_weight: float = 0.40
     aux_huber_delta: float = 0.05
     aux_ramp_epochs: int = 4
-    grad_monitor_every_steps: int = 200
+    grad_monitor_every_steps: int = 1000
     use_backbone_pcgrad: bool = True
     pcgrad_eps: float = 1.0e-12
     resume_if_exists: bool = False
@@ -102,17 +106,43 @@ def set_global_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def _capture_rng_state() -> Dict[str, object]:
+    state: Dict[str, object] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(state: object) -> None:
+    if not isinstance(state, dict):
+        return
+    try:
+        if "python" in state:
+            random.setstate(state["python"])
+        if "numpy" in state:
+            np.random.set_state(state["numpy"])
+        if "torch_cpu" in state:
+            torch.set_rng_state(state["torch_cpu"])
+        if torch.cuda.is_available() and ("torch_cuda" in state):
+            torch.cuda.set_rng_state_all(state["torch_cuda"])
+    except Exception as exc:
+        print(f"[resume] Failed to restore RNG state ({exc}); continuing with seeded RNG")
+
+
 def default_colab_profile(gpu_name: Optional[str], total_mem_gb: float, cpu_count: Optional[int]) -> Dict[str, int]:
     gpu_name = (gpu_name or "").upper()
     cpu_count = int(cpu_count or 2)
     if "T4" in gpu_name and total_mem_gb >= 14.0:
         return {
-            "main_batch_size": 192,
-            "clean_center_batch_size": 24,
-            "ambiguous_center_batch_size": 48,
-            "grad_accum_steps": 4,
-            "eval_batch_size": 1024,
-            "num_workers": min(4, max(2, cpu_count // 2)),
+            "main_batch_size": 320,
+            "clean_center_batch_size": 40,
+            "ambiguous_center_batch_size": 80,
+            "grad_accum_steps": 2,
+            "eval_batch_size": 2048,
         }
     if total_mem_gb >= 14.0:
         return {
@@ -121,7 +151,6 @@ def default_colab_profile(gpu_name: Optional[str], total_mem_gb: float, cpu_coun
             "ambiguous_center_batch_size": 64,
             "grad_accum_steps": 3,
             "eval_batch_size": 1024,
-            "num_workers": min(4, max(2, cpu_count // 2)),
         }
     if total_mem_gb >= 8.0:
         return {
@@ -130,7 +159,6 @@ def default_colab_profile(gpu_name: Optional[str], total_mem_gb: float, cpu_coun
             "ambiguous_center_batch_size": 48,
             "grad_accum_steps": 4,
             "eval_batch_size": 768,
-            "num_workers": min(3, max(2, cpu_count // 2)),
         }
     return {
         "main_batch_size": 96,
@@ -138,8 +166,104 @@ def default_colab_profile(gpu_name: Optional[str], total_mem_gb: float, cpu_coun
         "ambiguous_center_batch_size": 32,
         "grad_accum_steps": 4,
         "eval_batch_size": 384,
-        "num_workers": 0,
     }
+
+
+def _candidate_colab_profiles(gpu_name: Optional[str], total_mem_gb: float) -> List[Dict[str, int]]:
+    gpu_name = (gpu_name or "").upper()
+    candidates: List[Dict[str, int]] = []
+    if "T4" in gpu_name and total_mem_gb >= 14.0:
+        candidates.extend(
+            [
+                {"main_batch_size": 512, "clean_center_batch_size": 64, "ambiguous_center_batch_size": 128, "grad_accum_steps": 1, "eval_batch_size": 3072},
+                {"main_batch_size": 448, "clean_center_batch_size": 56, "ambiguous_center_batch_size": 112, "grad_accum_steps": 1, "eval_batch_size": 2560},
+                {"main_batch_size": 384, "clean_center_batch_size": 48, "ambiguous_center_batch_size": 96, "grad_accum_steps": 1, "eval_batch_size": 2048},
+            ]
+        )
+    candidates.append(default_colab_profile(gpu_name=gpu_name, total_mem_gb=total_mem_gb, cpu_count=2))
+    dedup: List[Dict[str, int]] = []
+    seen: set[Tuple[int, int, int, int, int]] = set()
+    for item in candidates:
+        key = (
+            int(item["main_batch_size"]),
+            int(item["clean_center_batch_size"]),
+            int(item["ambiguous_center_batch_size"]),
+            int(item["grad_accum_steps"]),
+            int(item["eval_batch_size"]),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(item)
+    return dedup
+
+
+def _resolve_amp_dtype(amp_dtype: object) -> torch.dtype:
+    value = str(amp_dtype).strip().lower()
+    if value in {"float16", "fp16", "half"}:
+        return torch.float16
+    if value in {"bfloat16", "bf16"}:
+        return torch.bfloat16
+    return torch.float16
+
+
+def _unscale_grad_list(
+    grads: Sequence[Optional[torch.Tensor]],
+    loss_scale: float,
+) -> List[Optional[torch.Tensor]]:
+    loss_scale = float(loss_scale)
+    if abs(loss_scale - 1.0) <= 1e-12:
+        return [None if grad is None else grad.detach() for grad in grads]
+    inv_scale = 1.0 / loss_scale
+    return [None if grad is None else (grad.detach() * inv_scale) for grad in grads]
+
+
+def _all_grads_finite(params: Sequence[nn.Parameter]) -> bool:
+    for param in params:
+        grad = param.grad
+        if grad is None:
+            continue
+        if not bool(torch.isfinite(grad).all()):
+            return False
+    return True
+
+
+def _resolve_preload_numpy_dtype(preload_dtype: object, use_amp: bool, amp_dtype: object) -> Optional[np.dtype]:
+    value = str(preload_dtype).strip().lower()
+    if value in {"", "none", "false", "off", "uint8"}:
+        return None
+    if value == "auto":
+        return np.float16 if (bool(use_amp) and _resolve_amp_dtype(amp_dtype) == torch.float16) else np.float32
+    if value in {"float16", "fp16", "half"}:
+        return np.float16
+    if value in {"float32", "fp32"}:
+        return np.float32
+    raise ValueError(f"Unsupported preload_shard_dtype: {preload_dtype}")
+
+
+def _ft1_resume_signature(model_cfg: Dict[str, object], train_cfg: FT1TrainConfig, gate_cfg: FT1GateConfig) -> Dict[str, object]:
+    train_cfg_dict = asdict(train_cfg)
+    ignored = {"epochs", "resume_if_exists", "log_every_steps", "grad_monitor_every_steps"}
+    filtered_train_cfg = {k: train_cfg_dict[k] for k in sorted(train_cfg_dict) if k not in ignored}
+    return {
+        "model_cfg": dict(model_cfg),
+        "train_cfg": filtered_train_cfg,
+        "gate_cfg": asdict(gate_cfg),
+    }
+
+
+def _diff_resume_signature(existing: Dict[str, object], current: Dict[str, object]) -> List[str]:
+    diffs: List[str] = []
+    for section in ("model_cfg", "train_cfg", "gate_cfg"):
+        existing_section = dict(existing.get(section, {}))
+        current_section = dict(current.get(section, {}))
+        keys = sorted(set(existing_section) | set(current_section))
+        for key in keys:
+            if existing_section.get(key) != current_section.get(key):
+                diffs.append(
+                    f"{section}.{key}: existing={existing_section.get(key)!r} current={current_section.get(key)!r}"
+                )
+    return diffs
 
 
 def build_l4_variant() -> ab_lab.AblationVariant:
@@ -258,6 +382,7 @@ def load_ft1_role_bundle(bundle_dir: str | Path) -> Dict[str, object]:
         "manifest": manifest,
         "rows": rows,
         "X": np.asarray(npz["X"], dtype=np.uint8),
+        "X_train": np.asarray(npz["X"], dtype=np.uint8),
         "oracle_y": np.asarray(npz["oracle_y"], dtype=np.float32),
         "source_role_code": source_role_code,
         "role_code": final_role_code,
@@ -374,6 +499,100 @@ def compute_ft1_aux_terms(
         "clean_frac": torch.mean(clean_mask.float()),
         "ambiguous_frac": torch.mean(ambiguous_mask.float()),
     }
+
+
+def autotune_ft1_profile(
+    model_cfg: Dict[str, object],
+    device: torch.device,
+    gpu_name: Optional[str],
+    total_mem_gb: float,
+    base_profile: Optional[Dict[str, int]] = None,
+    use_amp: bool = True,
+    amp_dtype: str = "float16",
+    amp_loss_scale: float = 128.0,
+) -> Dict[str, int]:
+    if device.type != "cuda":
+        return dict(base_profile or default_colab_profile(gpu_name, total_mem_gb, cpu_count=2))
+
+    l4_variant = build_l4_variant()
+    candidates = _candidate_colab_profiles(gpu_name=gpu_name, total_mem_gb=total_mem_gb)
+    if base_profile is not None:
+        candidates.append(dict(base_profile))
+    resolved_amp_dtype = _resolve_amp_dtype(amp_dtype)
+    amp_ctx_kwargs: Dict[str, object] = {"device_type": "cuda", "enabled": bool(use_amp)}
+    grad_scale = 1.0
+    if bool(use_amp):
+        amp_ctx_kwargs["dtype"] = resolved_amp_dtype
+        if resolved_amp_dtype == torch.float16:
+            grad_scale = max(float(amp_loss_scale), 1.0)
+
+    for candidate in candidates:
+        model = None
+        try:
+            torch.cuda.empty_cache()
+            model = DGRNChessNetV2(**model_cfg).to(device)
+            model.train()
+            backbone_params = [
+                param
+                for name, param in model.named_parameters()
+                if param.requires_grad and (name.startswith("stem.") or name.startswith("blocks."))
+            ]
+            head_params = [
+                param
+                for name, param in model.named_parameters()
+                if param.requires_grad and not (name.startswith("stem.") or name.startswith("blocks."))
+            ]
+            main_bs = int(candidate["main_batch_size"])
+            clean_bs = int(candidate["clean_center_batch_size"])
+            ambiguous_bs = int(candidate["ambiguous_center_batch_size"])
+            total_aux = clean_bs + ambiguous_bs
+            xb_main = torch.randint(0, 2, (main_bs, 18, 8, 8), device=device, dtype=torch.uint8).float()
+            yb_main = torch.empty(main_bs, device=device, dtype=torch.float32).uniform_(-1.0, 1.0)
+            xb_aux = torch.randint(0, 2, (total_aux, 18, 8, 8), device=device, dtype=torch.uint8).float()
+            yb_aux = torch.empty(total_aux, device=device, dtype=torch.float32).uniform_(-0.2, 0.2)
+            role_aux = torch.cat(
+                [
+                    torch.full((clean_bs,), ROLE_CLEAN_CENTER, device=device, dtype=torch.long),
+                    torch.full((ambiguous_bs,), ROLE_AMBIGUOUS_CENTER, device=device, dtype=torch.long),
+                ],
+                dim=0,
+            )
+            xb_mix = torch.cat([xb_main, xb_aux], dim=0)
+            with autocast(**amp_ctx_kwargs):
+                logits_mix = model.forward_logits(xb_mix).view(-1)
+                main_logits = logits_mix[:main_bs]
+                aux_logits = logits_mix[main_bs:]
+                probe_cfg = FT1TrainConfig(
+                    main_batch_size=main_bs,
+                    clean_center_batch_size=clean_bs,
+                    ambiguous_center_batch_size=ambiguous_bs,
+                    use_amp=use_amp,
+                    amp_dtype=amp_dtype,
+                    amp_loss_scale=amp_loss_scale,
+                )
+                main_terms = compute_l4_main_terms(main_logits, yb_main, l4_variant, probe_cfg)
+                aux_terms = compute_ft1_aux_terms(aux_logits, yb_aux, role_aux, probe_cfg)
+                main_for_grad = main_terms["objective"] * grad_scale
+                aux_for_grad = aux_terms["objective"] * grad_scale
+                total_for_grad = (main_terms["objective"] + aux_terms["objective"]) * grad_scale
+            main_backbone_grads = torch.autograd.grad(main_for_grad, backbone_params, retain_graph=True, allow_unused=True)
+            aux_backbone_grads = torch.autograd.grad(aux_for_grad, backbone_params, retain_graph=True, allow_unused=True)
+            _ = project_backbone_conflicts(
+                _unscale_grad_list(main_backbone_grads, grad_scale),
+                _unscale_grad_list(aux_backbone_grads, grad_scale),
+                eps=1.0e-12,
+            )
+            _ = torch.autograd.grad(total_for_grad, head_params, retain_graph=False, allow_unused=True)
+            torch.cuda.synchronize(device)
+            return dict(candidate)
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower():
+                raise
+        finally:
+            if model is not None:
+                del model
+            torch.cuda.empty_cache()
+    return dict(base_profile or default_colab_profile(gpu_name, total_mem_gb, cpu_count=2))
 
 
 def _flatten_grads(grads: Sequence[Optional[torch.Tensor]]) -> torch.Tensor:
@@ -604,9 +823,15 @@ def _checkpoint_payload(
     best_gate_center_score: float,
     run_config: Dict[str, object],
     decision_summary: Dict[str, object],
+    is_epoch_end: bool = True,
+    resume_shard_index: Optional[int] = None,
+    resume_next_start: Optional[int] = None,
+    aux_rng_state: Optional[Dict[str, object]] = None,
+    rng_state: Optional[Dict[str, object]] = None,
 ) -> Dict[str, object]:
-    return {
+    payload = {
         "epoch": int(epoch),
+        "is_epoch_end": bool(is_epoch_end),
         "global_step": int(global_step),
         "config": run_config,
         "history": history_rows,
@@ -618,6 +843,15 @@ def _checkpoint_payload(
         "best_gate_center_score": float(best_gate_center_score),
         "decision_summary": decision_summary,
     }
+    if resume_shard_index is not None:
+        payload["resume_shard_index"] = int(resume_shard_index)
+    if resume_next_start is not None:
+        payload["resume_next_start"] = int(resume_next_start)
+    if aux_rng_state is not None:
+        payload["aux_rng_state"] = aux_rng_state
+    if rng_state is not None:
+        payload["rng_state"] = rng_state
+    return payload
 
 
 def _load_checkpoint_state(path: Path) -> Dict[str, object]:
@@ -629,8 +863,9 @@ def evaluate_ft1_model(
     data_root: str | Path,
     device: torch.device,
     eval_batch_size: int,
-    test_max_samples: int,
-    test_num_shards: int,
+    split: str,
+    max_samples: int,
+    num_shards: int,
     oracle_bundle: Dict[str, object],
     pooled_center_bundle: Dict[str, object],
     role_bundle: Dict[str, object],
@@ -640,10 +875,10 @@ def evaluate_ft1_model(
     split_eval = ab_lab.evaluate_model_on_split_scale_aware(
         model=model,
         data_root=data_root,
-        split="val",
+        split=str(split),
         device=device,
-        max_samples=test_max_samples,
-        num_shards=test_num_shards,
+        max_samples=max_samples,
+        num_shards=num_shards,
         batch_size=eval_batch_size,
         target_scale=600.0,
         oracle_cfg=oracle_cfg,
@@ -704,17 +939,22 @@ def evaluate_saved_checkpoint(
     role_bundle = load_ft1_role_bundle(oracle_role_bundle_dir)
     model, _ = base_lab.load_model_from_checkpoint(checkpoint_path, device=device)
     try:
-        return evaluate_ft1_model(
+        eval_result = evaluate_ft1_model(
             model=model,
             data_root=data_root,
             device=device,
             eval_batch_size=eval_batch_size,
-            test_max_samples=test_max_samples,
-            test_num_shards=test_num_shards,
+            split="test",
+            max_samples=test_max_samples,
+            num_shards=test_num_shards,
             oracle_bundle=oracle_bundle,
             pooled_center_bundle=pooled_center_bundle,
             role_bundle=role_bundle,
         )
+        # Backward compatibility for notebook cells that read primary metrics at top-level.
+        eval_result = dict(eval_result)
+        eval_result.update(dict(eval_result.get("primary", {})))
+        return eval_result
     finally:
         del model
         _cleanup_cuda()
@@ -727,19 +967,29 @@ def evaluate_l4_reference(
     oracle_role_bundle_dir: str | Path,
     device: torch.device,
     eval_batch_size: int = 1024,
-    test_max_samples: int = 200_000,
-    test_num_shards: int = 4,
+    val_max_samples: int = 100_000,
+    val_num_shards: int = 2,
 ) -> Dict[str, object]:
-    return evaluate_saved_checkpoint(
-        checkpoint_path=checkpoint_path,
-        data_root=data_root,
-        pooled_center_bundle_dir=pooled_center_bundle_dir,
-        oracle_role_bundle_dir=oracle_role_bundle_dir,
-        device=device,
-        eval_batch_size=eval_batch_size,
-        test_max_samples=test_max_samples,
-        test_num_shards=test_num_shards,
-    )
+    oracle_bundle = obj_lab.build_primary_oracle_bundle(data_root)
+    pooled_center_bundle = load_pooled_center_bundle(pooled_center_bundle_dir)
+    role_bundle = load_ft1_role_bundle(oracle_role_bundle_dir)
+    model, _ = base_lab.load_model_from_checkpoint(checkpoint_path, device=device)
+    try:
+        return evaluate_ft1_model(
+            model=model,
+            data_root=data_root,
+            device=device,
+            eval_batch_size=eval_batch_size,
+            split="val",
+            max_samples=val_max_samples,
+            num_shards=val_num_shards,
+            oracle_bundle=oracle_bundle,
+            pooled_center_bundle=pooled_center_bundle,
+            role_bundle=role_bundle,
+        )
+    finally:
+        del model
+        _cleanup_cuda()
 
 
 def _aux_weight_scale(epoch: int, cfg: FT1TrainConfig) -> float:
@@ -765,8 +1015,10 @@ def _sample_aux_indices(role_bundle: Dict[str, object], cfg: FT1TrainConfig, rng
     return out
 
 
-def _load_shard_arrays(x_path: Path, y_path: Path) -> Tuple[np.ndarray, np.ndarray]:
+def _load_shard_arrays(x_path: Path, y_path: Path, preload_x_dtype: Optional[np.dtype] = None) -> Tuple[np.ndarray, np.ndarray]:
     X = np.load(x_path, mmap_mode="r")
+    if preload_x_dtype is not None:
+        X = np.asarray(X, dtype=preload_x_dtype)
     y = np.load(y_path, mmap_mode="r").astype(np.float32, copy=False)
     return X, y
 
@@ -790,6 +1042,7 @@ def save_history_outputs(history_rows: List[dict], step_rows: List[dict], report
         "train_aux_objective",
         "aux_scale",
         "grad_cosine_backbone",
+        "grad_cosine_backbone_pre",
         "grad_cosine_backbone_post",
         "grad_norm_main_backbone",
         "grad_norm_aux_backbone",
@@ -813,25 +1066,49 @@ def save_history_outputs(history_rows: List[dict], step_rows: List[dict], report
 
 
 def run_ft1_full_retrain(
-    repo_root: str | Path,
     runs_root: str | Path,
     data_root: str | Path,
     model_cfg: Dict[str, object],
     train_cfg: FT1TrainConfig,
     gate_cfg: FT1GateConfig,
     device: torch.device,
+    repo_root: str | Path | None = None,
 ) -> Dict[str, object]:
+    if repo_root is None:
+        repo_root = Path(__file__).resolve().parents[1]
+    if int(train_cfg.epochs) <= 0:
+        raise ValueError("train_cfg.epochs must be > 0")
+    if int(train_cfg.main_batch_size) <= 0:
+        raise ValueError("train_cfg.main_batch_size must be > 0")
+    if int(train_cfg.eval_batch_size) <= 0:
+        raise ValueError("train_cfg.eval_batch_size must be > 0")
+    if int(train_cfg.grad_accum_steps) <= 0:
+        raise ValueError("train_cfg.grad_accum_steps must be > 0")
+    if int(train_cfg.clean_center_batch_size) < 0 or int(train_cfg.ambiguous_center_batch_size) < 0:
+        raise ValueError("train_cfg clean/ambiguous center batch sizes must be >= 0")
+    if int(train_cfg.grad_monitor_every_steps) <= 0:
+        raise ValueError("train_cfg.grad_monitor_every_steps must be > 0")
+    if float(getattr(train_cfg, "amp_loss_scale", 128.0)) <= 0.0:
+        raise ValueError("train_cfg.amp_loss_scale must be > 0")
     repo_root = Path(repo_root)
     runs_root = Path(runs_root)
     data_root = Path(data_root)
     paths = build_default_paths(repo_root=repo_root, runs_root=runs_root, run_name=train_cfg.run_name)
     runtime_check = validate_ft1_runtime_paths(data_root=data_root, paths=paths)
     base_lab.save_json(runtime_check, paths["reports_dir"] / "runtime_check.json")
+    current_signature = _ft1_resume_signature(model_cfg=model_cfg, train_cfg=train_cfg, gate_cfg=gate_cfg)
 
     l4_variant = build_l4_variant()
     oracle_bundle = obj_lab.build_primary_oracle_bundle(data_root)
     pooled_center_bundle = load_pooled_center_bundle(paths["pooled_center_bundle_dir"])
     role_bundle = load_ft1_role_bundle(paths["oracle_role_bundle_dir"])
+    preload_x_dtype = _resolve_preload_numpy_dtype(
+        preload_dtype=getattr(train_cfg, "preload_shard_dtype", "auto"),
+        use_amp=bool(getattr(train_cfg, "use_amp", True)),
+        amp_dtype=getattr(train_cfg, "amp_dtype", "float16"),
+    )
+    if preload_x_dtype is not None:
+        role_bundle["X_train"] = np.asarray(role_bundle["X"], dtype=preload_x_dtype)
 
     l4_reference = evaluate_l4_reference(
         checkpoint_path=paths["l4_reference_ckpt"],
@@ -840,8 +1117,8 @@ def run_ft1_full_retrain(
         oracle_role_bundle_dir=paths["oracle_role_bundle_dir"],
         device=device,
         eval_batch_size=train_cfg.eval_batch_size,
-        test_max_samples=train_cfg.test_max_samples,
-        test_num_shards=train_cfg.test_num_shards,
+        val_max_samples=train_cfg.val_max_samples,
+        val_num_shards=train_cfg.val_num_shards,
     )
     base_lab.save_json(
         {
@@ -880,34 +1157,79 @@ def run_ft1_full_retrain(
 
     history_rows: List[dict] = []
     step_rows: List[dict] = []
+    decision_summary_out: Dict[str, object] = {}
     global_step = 0
     start_epoch = 0
+    resume_is_epoch_end = True
+    resume_shard_index = 0
+    resume_next_start = 0
+    resume_aux_rng_state: Optional[Dict[str, object]] = None
+    resume_rng_state: Optional[Dict[str, object]] = None
     best_any_center_score = float("inf")
     best_gate_center_score = float("inf")
+    if decision_summary_path.exists():
+        try:
+            decision_summary_out = json.loads(decision_summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            decision_summary_out = {}
     if latest_ckpt.exists():
         if not bool(train_cfg.resume_if_exists):
             raise RuntimeError(
                 f"Found existing checkpoint at {latest_ckpt} while resume_if_exists=False. "
                 f"Use a new run_name or enable resume explicitly."
             )
+        existing_signature: Dict[str, object] = {}
+        existing_run_config_path = paths["reports_dir"] / "run_config.json"
+        if existing_run_config_path.exists():
+            existing_run_config = json.loads(existing_run_config_path.read_text(encoding="utf-8"))
         resume = _load_checkpoint_state(latest_ckpt)
-        model.load_state_dict(resume["model_state"], strict=True)
-        optimizer.load_state_dict(resume["optimizer_state"])
-        scheduler.load_state_dict(resume["scheduler_state"])
+        if not existing_signature:
+            existing_signature = dict(resume.get("config", {}).get("resume_signature", {}))
+        if existing_signature:
+            diffs = _diff_resume_signature(existing_signature, current_signature)
+            if diffs:
+                diff_text = "; ".join(diffs[:12])
+                raise RuntimeError(
+                    "Resume config mismatch for existing FT1 run. "
+                    f"Use a new run_name or restore the old config. Diffs: {diff_text}"
+                )
+        resume_model_state = resume.get("model_state", resume.get("model"))
+        if resume_model_state is None:
+            raise KeyError("Resume checkpoint missing model state: expected 'model_state' or 'model'")
+        model.load_state_dict(resume_model_state, strict=True)
+        resume_optimizer_state = resume.get("optimizer_state")
+        if resume_optimizer_state is None:
+            raise KeyError("Resume checkpoint missing optimizer_state")
+        optimizer.load_state_dict(resume_optimizer_state)
+        resume_scheduler_state = resume.get("scheduler_state")
+        if resume_scheduler_state is not None:
+            scheduler.load_state_dict(resume_scheduler_state)
         history_rows = list(resume.get("history", []))
         step_history_path = paths["reports_dir"] / "step_history.csv"
         if step_history_path.exists():
             step_rows = pd.read_csv(step_history_path).to_dict(orient="records")
         global_step = int(resume.get("global_step", 0))
-        start_epoch = int(resume.get("epoch", -1)) + 1
+        resume_epoch = int(resume.get("epoch", -1))
+        resume_is_epoch_end = bool(resume.get("is_epoch_end", True))
+        resume_aux_rng_state = resume.get("aux_rng_state")
+        resume_rng_state = resume.get("rng_state")
+        start_epoch = (resume_epoch + 1) if resume_is_epoch_end else max(0, resume_epoch)
+        if not resume_is_epoch_end:
+            resume_shard_index = min(max(0, int(resume.get("resume_shard_index", 0))), len(train_shards))
+            resume_next_start = max(0, int(resume.get("resume_next_start", 0)))
         best_any_center_score = float(resume.get("best_any_center_score", best_any_center_score))
         best_gate_center_score = float(resume.get("best_gate_center_score", best_gate_center_score))
-        print(f"[resume] Loaded {latest_ckpt} at epoch={start_epoch} global_step={global_step}")
+        print(
+            f"[resume] Loaded {latest_ckpt} at epoch={start_epoch} "
+            f"global_step={global_step} is_epoch_end={resume_is_epoch_end} "
+            f"resume_shard_index={resume_shard_index} resume_next_start={resume_next_start}"
+        )
 
     run_config = {
         "model_cfg": dict(model_cfg),
         "train_cfg": asdict(train_cfg),
         "gate_cfg": asdict(gate_cfg),
+        "resume_signature": current_signature,
         "l4_variant": asdict(l4_variant),
         "data_root": str(data_root),
         "l4_reference_ckpt": str(paths["l4_reference_ckpt"]),
@@ -918,17 +1240,76 @@ def run_ft1_full_retrain(
     }
     base_lab.save_json(run_config, paths["reports_dir"] / "run_config.json")
 
+    periodic_latest_interval_sec = 20.0 * 60.0
+    next_periodic_latest_save_time = time.time() + periodic_latest_interval_sec
+
+    def _maybe_save_periodic_latest_checkpoint(
+        current_epoch: int,
+        resume_shard_index: Optional[int] = None,
+        resume_next_start: Optional[int] = None,
+        aux_rng_state: Optional[Dict[str, object]] = None,
+        rng_state: Optional[Dict[str, object]] = None,
+    ) -> None:
+        nonlocal next_periodic_latest_save_time
+        now = time.time()
+        if now < next_periodic_latest_save_time:
+            return
+        periodic_payload = _checkpoint_payload(
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            history_rows=history_rows,
+            epoch=current_epoch,
+            global_step=global_step,
+            best_any_center_score=best_any_center_score,
+            best_gate_center_score=best_gate_center_score,
+            run_config=run_config,
+            decision_summary=dict(decision_summary_out),
+            is_epoch_end=False,
+            resume_shard_index=resume_shard_index,
+            resume_next_start=resume_next_start,
+            aux_rng_state=aux_rng_state,
+            rng_state=rng_state,
+        )
+        ab_lab.atomic_torch_save(periodic_payload, latest_ckpt)
+        while next_periodic_latest_save_time <= now:
+            next_periodic_latest_save_time += periodic_latest_interval_sec
+
     aux_rng = np.random.default_rng(train_cfg.seed + 2026)
+    if isinstance(resume_aux_rng_state, dict):
+        try:
+            aux_rng.bit_generator.state = resume_aux_rng_state
+        except Exception as exc:
+            print(f"[resume] Failed to restore aux RNG state ({exc}); continuing with seeded RNG")
     backbone_params = [
         param
         for name, param in model.named_parameters()
         if param.requires_grad and (name.startswith("stem.") or name.startswith("blocks."))
     ]
+    head_params = [
+        param
+        for name, param in model.named_parameters()
+        if param.requires_grad and not (name.startswith("stem.") or name.startswith("blocks."))
+    ]
     all_params = [param for param in model.parameters() if param.requires_grad]
-    all_param_index = {id(param): idx for idx, param in enumerate(all_params)}
+    use_train_amp = bool(getattr(train_cfg, "use_amp", True)) and (device.type == "cuda")
+    amp_ctx_kwargs: Dict[str, object] = {
+        "device_type": device.type,
+        "enabled": use_train_amp,
+    }
+    amp_grad_scale = 1.0
+    if use_train_amp:
+        resolved_amp_dtype = _resolve_amp_dtype(getattr(train_cfg, "amp_dtype", "float16"))
+        amp_ctx_kwargs["dtype"] = resolved_amp_dtype
+        if resolved_amp_dtype == torch.float16:
+            amp_grad_scale = max(float(getattr(train_cfg, "amp_loss_scale", 128.0)), 1.0)
 
     for epoch in range(start_epoch, int(train_cfg.epochs)):
-        set_global_seed(train_cfg.seed + epoch)
+        is_partial_resume_epoch = (epoch == start_epoch and not resume_is_epoch_end)
+        if is_partial_resume_epoch and isinstance(resume_rng_state, dict):
+            _restore_rng_state(resume_rng_state)
+        else:
+            set_global_seed(train_cfg.seed + epoch)
         model.train()
         optimizer.zero_grad(set_to_none=True)
         aux_scale = _aux_weight_scale(epoch, train_cfg)
@@ -944,10 +1325,14 @@ def run_ft1_full_retrain(
         }
         grad_samples: List[Dict[str, float]] = []
         t0 = time.time()
+        epoch_resume_shard_index = resume_shard_index if (epoch == start_epoch and not resume_is_epoch_end) else 0
+        epoch_resume_next_start = resume_next_start if (epoch == start_epoch and not resume_is_epoch_end) else 0
 
         micro_step = 0
         for shard_index, (shard_id, x_path, y_path) in enumerate(train_shards):
-            X_shard, y_shard = _load_shard_arrays(x_path, y_path)
+            if shard_index < epoch_resume_shard_index:
+                continue
+            X_shard, y_shard = _load_shard_arrays(x_path, y_path, preload_x_dtype=preload_x_dtype)
             abs_y = np.abs(y_shard.astype(np.float64, copy=False))
             order = ab_lab.build_band_balanced_order(
                 abs_y=abs_y,
@@ -957,19 +1342,21 @@ def run_ft1_full_retrain(
                 target_scale=float(l4_variant.target_scale),
             )
 
-            for start in range(0, int(order.shape[0]), int(train_cfg.main_batch_size)):
+            shard_start_offset = epoch_resume_next_start if shard_index == epoch_resume_shard_index else 0
+            shard_start_offset = min(max(0, int(shard_start_offset)), int(order.shape[0]))
+            for start in range(shard_start_offset, int(order.shape[0]), int(train_cfg.main_batch_size)):
                 idx = order[start : start + int(train_cfg.main_batch_size)]
-                xb_main = torch.from_numpy(np.array(X_shard[idx], dtype=np.float32, copy=True)).to(device=device, non_blocking=True)
+                xb_main = torch.from_numpy(np.array(X_shard[idx], copy=False)).to(device=device, non_blocking=True)
                 yb_main = torch.from_numpy(np.array(y_shard[idx], dtype=np.float32, copy=True)).to(device=device, non_blocking=True).view(-1)
 
                 aux_idx = _sample_aux_indices(role_bundle, train_cfg, aux_rng)
-                xb_aux = torch.from_numpy(np.array(role_bundle["X"][aux_idx], dtype=np.float32, copy=True)).to(device=device, non_blocking=True)
+                xb_aux = torch.from_numpy(np.array(role_bundle["X_train"][aux_idx], copy=False)).to(device=device, non_blocking=True)
                 yb_aux = torch.from_numpy(np.array(role_bundle["oracle_y"][aux_idx], dtype=np.float32, copy=True)).to(device=device, non_blocking=True).view(-1)
                 role_aux = torch.from_numpy(np.array(role_bundle["role_code"][aux_idx], dtype=np.int64, copy=True)).to(device=device, non_blocking=True).view(-1)
 
                 xb_mix = torch.cat([xb_main, xb_aux], dim=0)
                 accum_scale = 1.0 / max(int(train_cfg.grad_accum_steps), 1)
-                with autocast(device_type=device.type, enabled=False):
+                with autocast(**amp_ctx_kwargs):
                     logits_mix = model.forward_logits(xb_mix).view(-1)
                     main_logits = logits_mix[: yb_main.numel()]
                     aux_logits = logits_mix[yb_main.numel() :]
@@ -981,13 +1368,37 @@ def run_ft1_full_retrain(
                     aux_for_grad = aux_objective_scaled * accum_scale
                     total_for_grad = total_objective * accum_scale
 
-                main_backbone_grads = torch.autograd.grad(main_for_grad, backbone_params, retain_graph=True, allow_unused=True)
-                aux_backbone_grads = torch.autograd.grad(aux_for_grad, backbone_params, retain_graph=True, allow_unused=True)
-                should_monitor = (global_step % int(train_cfg.grad_monitor_every_steps) == 0) and torch.isfinite(total_objective)
+                if not bool(torch.isfinite(total_objective)):
+                    print(
+                        f"[ft1][epoch={epoch}] non-finite objective at shard={shard_id}, "
+                        f"micro_step={micro_step}; skipping micro-batch"
+                    )
+                    continue
+
+                main_for_grad_scaled = main_for_grad * float(amp_grad_scale)
+                aux_for_grad_scaled = aux_for_grad * float(amp_grad_scale)
+                total_for_grad_scaled = total_for_grad * float(amp_grad_scale)
+
+                main_backbone_grads = torch.autograd.grad(main_for_grad_scaled, backbone_params, retain_graph=True, allow_unused=True)
+                aux_backbone_grads = torch.autograd.grad(aux_for_grad_scaled, backbone_params, retain_graph=True, allow_unused=True)
+                should_step = ((micro_step + 1) % max(int(train_cfg.grad_accum_steps), 1)) == 0
+                next_global_step = int(global_step) + (1 if should_step else 0)
+                should_monitor = (
+                    should_step
+                    and torch.isfinite(total_objective)
+                    and (next_global_step % int(train_cfg.grad_monitor_every_steps) == 0)
+                )
                 if should_monitor:
-                    main_all_grads = torch.autograd.grad(main_for_grad, all_params, retain_graph=True, allow_unused=True)
-                    aux_all_grads = torch.autograd.grad(aux_for_grad, all_params, retain_graph=True, allow_unused=True)
-                total_all_grads = list(torch.autograd.grad(total_for_grad, all_params, retain_graph=False, allow_unused=True))
+                    main_all_grads = torch.autograd.grad(main_for_grad_scaled, all_params, retain_graph=True, allow_unused=True)
+                    aux_all_grads = torch.autograd.grad(aux_for_grad_scaled, all_params, retain_graph=True, allow_unused=True)
+                total_head_grads = list(torch.autograd.grad(total_for_grad_scaled, head_params, retain_graph=False, allow_unused=True))
+
+                main_backbone_grads = _unscale_grad_list(main_backbone_grads, amp_grad_scale)
+                aux_backbone_grads = _unscale_grad_list(aux_backbone_grads, amp_grad_scale)
+                total_head_grads = _unscale_grad_list(total_head_grads, amp_grad_scale)
+                if should_monitor:
+                    main_all_grads = _unscale_grad_list(main_all_grads, amp_grad_scale)
+                    aux_all_grads = _unscale_grad_list(aux_all_grads, amp_grad_scale)
 
                 shared_backbone_grads, pcgrad_report = project_backbone_conflicts(
                     main_backbone_grads,
@@ -1004,9 +1415,6 @@ def run_ft1_full_retrain(
                     pcgrad_report["grad_conflict_backbone"] = 0.0
                     pcgrad_report["grad_projection_scale"] = 0.0
 
-                for param, shared_grad in zip(backbone_params, shared_backbone_grads):
-                    total_all_grads[all_param_index[id(param)]] = shared_grad
-
                 if should_monitor:
                     grad_report = collect_gradient_monitor(
                         main_grads_backbone=main_backbone_grads,
@@ -1016,20 +1424,30 @@ def run_ft1_full_retrain(
                         aux_grads_all=aux_all_grads,
                     )
                     grad_report.update(pcgrad_report)
-                    grad_report["global_step"] = int(global_step)
+                    grad_report["global_step"] = int(next_global_step)
                     grad_samples.append(grad_report)
                     step_rows.append(
                         {
-                            "global_step": int(global_step),
+                            "global_step": int(next_global_step),
                             "train_total_objective": float(total_objective.item()),
                             "train_main_objective": float(main_terms["objective"].item()),
                             "train_aux_objective": float(aux_terms["objective"].item()),
                             "aux_scale": float(aux_scale),
+                            "grad_cosine_backbone_pre": float(grad_report.get("grad_cosine_backbone", float("nan"))),
                             **grad_report,
                         }
                     )
 
-                for param, grad in zip(all_params, total_all_grads):
+                for param, grad in zip(backbone_params, shared_backbone_grads):
+                    if grad is None:
+                        continue
+                    grad_detached = grad.detach()
+                    if param.grad is None:
+                        param.grad = grad_detached.clone()
+                    else:
+                        param.grad.add_(grad_detached)
+
+                for param, grad in zip(head_params, total_head_grads):
                     if grad is None:
                         continue
                     grad_detached = grad.detach()
@@ -1038,7 +1456,6 @@ def run_ft1_full_retrain(
                     else:
                         param.grad.add_(grad_detached)
                 micro_step += 1
-                should_step = (micro_step % max(int(train_cfg.grad_accum_steps), 1)) == 0
 
                 bs = int(yb_main.numel())
                 epoch_running["main_objective"] += float(main_terms["objective"].item()) * bs
@@ -1051,12 +1468,26 @@ def run_ft1_full_retrain(
                 epoch_running["n"] += bs
 
                 if should_step:
+                    if not _all_grads_finite(all_params):
+                        optimizer.zero_grad(set_to_none=True)
+                        print(
+                            f"[ft1][epoch={epoch}] non-finite gradients before step={next_global_step}; "
+                            "skipping optimizer step"
+                        )
+                        continue
                     if train_cfg.grad_clip_norm is not None:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), float(train_cfg.grad_clip_norm))
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     scheduler.step()
                     global_step += 1
+                    _maybe_save_periodic_latest_checkpoint(
+                        epoch,
+                        resume_shard_index=shard_index,
+                        resume_next_start=int(start) + int(train_cfg.main_batch_size),
+                        aux_rng_state=aux_rng.bit_generator.state,
+                        rng_state=_capture_rng_state(),
+                    )
 
                     if global_step % int(train_cfg.log_every_steps) == 0:
                         print(
@@ -1069,12 +1500,26 @@ def run_ft1_full_retrain(
             print(f"[ft1][epoch={epoch}] finished shard {shard_index + 1}/{len(train_shards)} (shard_id={shard_id})")
 
         if (micro_step % max(int(train_cfg.grad_accum_steps), 1)) != 0:
-            if train_cfg.grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), float(train_cfg.grad_clip_norm))
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            scheduler.step()
-            global_step += 1
+            if not _all_grads_finite(all_params):
+                optimizer.zero_grad(set_to_none=True)
+                print(
+                    f"[ft1][epoch={epoch}] non-finite gradients at tail step={global_step + 1}; "
+                    "skipping optimizer step"
+                )
+            else:
+                if train_cfg.grad_clip_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), float(train_cfg.grad_clip_norm))
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+                global_step += 1
+                _maybe_save_periodic_latest_checkpoint(
+                    epoch,
+                    resume_shard_index=len(train_shards),
+                    resume_next_start=0,
+                    aux_rng_state=aux_rng.bit_generator.state,
+                    rng_state=_capture_rng_state(),
+                )
 
         model.eval()
         epoch_eval = evaluate_ft1_model(
@@ -1082,8 +1527,9 @@ def run_ft1_full_retrain(
             data_root=data_root,
             device=device,
             eval_batch_size=train_cfg.eval_batch_size,
-            test_max_samples=train_cfg.test_max_samples,
-            test_num_shards=train_cfg.test_num_shards,
+            split="val",
+            max_samples=train_cfg.val_max_samples,
+            num_shards=train_cfg.val_num_shards,
             oracle_bundle=oracle_bundle,
             pooled_center_bundle=pooled_center_bundle,
             role_bundle=role_bundle,
@@ -1189,6 +1635,8 @@ def run_ft1_full_retrain(
             best_gate_center_score=best_gate_center_score,
             run_config=run_config,
             decision_summary=decision_summary,
+            aux_rng_state=aux_rng.bit_generator.state,
+            rng_state=_capture_rng_state(),
         )
         ab_lab.atomic_torch_save(payload, latest_ckpt)
         if "best_any" in selected:
@@ -1209,6 +1657,7 @@ def run_ft1_full_retrain(
             "last_gate_pass": bool(gate_pass),
         }
         base_lab.save_json(decision_payload, decision_summary_path)
+        decision_summary_out = dict(decision_payload)
         print(json.dumps(_format_history_row(row), ensure_ascii=False, indent=2))
 
     selected_checkpoint = best_gate_ckpt if best_gate_ckpt.exists() else (best_any_ckpt if best_any_ckpt.exists() else latest_ckpt)
@@ -1233,6 +1682,8 @@ def run_ft1_full_retrain(
     )
     return {
         "paths": paths,
+        "run_dir": paths["run_dir"],
+        "decision_summary": decision_summary_out,
         "history": pd.DataFrame(history_rows),
         "selected_checkpoint": selected_checkpoint,
         "l4_reference": l4_reference,

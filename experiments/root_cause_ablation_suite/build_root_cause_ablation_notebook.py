@@ -34,7 +34,7 @@ cells = [
         """
         # Root-Cause Ablation Suite
 
-        Notebook nay hien thuc truc tiep roadmap trong `teacher_root_cause_spec_20260328.md`.
+        Notebook nay hien thuc truc tiep roadmap trong `docs/research/root_cause/teacher_root_cause_spec_2026-03-28.md`.
 
         Muc tieu:
 
