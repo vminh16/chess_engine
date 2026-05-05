@@ -150,7 +150,7 @@ Connect with any UCI-compatible GUI (Arena, Cute Chess, ChessBase, etc.). Suppor
 You can tune the neural blend ratio at startup:
 
 ```bash
-ENGINE_EPSILON=0.3 python uci.py   # 30 % neural, 70 % material
+ENGINE_EPSILON=0.3 python uci.py   # 30% neural, 70% material
 ```
 
 ### Training
@@ -159,7 +159,7 @@ ENGINE_EPSILON=0.3 python uci.py   # 30 % neural, 70 % material
 # Legacy local training
 jupyter notebook train/train.ipynb
 
-# FT1 — optimised for Google Colab
+# FT1 — optimized for Google Colab
 jupyter notebook train_v2_TF1/train.ipynb
 ```
 
