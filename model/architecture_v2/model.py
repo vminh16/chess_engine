@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from .blocks import DFGBlock
-from .head import ResidualGainValueHead
+from .head import RegimeSeparatedHead, ResidualGainValueHead, SimplifiedGlobalHead
 
 
 class DGRNChessNetV2(nn.Module):
@@ -21,10 +21,13 @@ class DGRNChessNetV2(nn.Module):
         drop_path_rate=0.1,
         head_hidden_dim=None,
         gain_limit=0.5,
+        head_type="residual_gain",
+        head_dropout=0.1,
         output_mode="tanh",
     ):
         super().__init__()
         self.output_mode = output_mode
+        self.head_type = str(head_type).strip().lower()
         head_hidden_dim = hidden_dim // 2 if head_hidden_dim is None else int(head_hidden_dim)
 
         self.stem = nn.Sequential(
@@ -36,12 +39,29 @@ class DGRNChessNetV2(nn.Module):
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, num_blocks)]
         self.blocks = nn.Sequential(*[DFGBlock(channels=hidden_dim, drop_path=dpr[i]) for i in range(num_blocks)])
 
-        self.head = ResidualGainValueHead(
-            in_channels=hidden_dim,
-            hidden_dim=head_hidden_dim,
-            gain_limit=gain_limit,
-            output_mode=output_mode,
-        )
+        if self.head_type == "residual_gain":
+            self.head = ResidualGainValueHead(
+                in_channels=hidden_dim,
+                hidden_dim=head_hidden_dim,
+                gain_limit=gain_limit,
+                output_mode=output_mode,
+            )
+        elif self.head_type == "simplified_global":
+            self.head = SimplifiedGlobalHead(
+                in_channels=hidden_dim,
+                hidden_dim=head_hidden_dim,
+                dropout=float(head_dropout),
+                output_mode=output_mode,
+            )
+        elif self.head_type == "regime_separated":
+            self.head = RegimeSeparatedHead(
+                in_channels=hidden_dim,
+                hidden_dim=head_hidden_dim,
+                dropout=float(head_dropout),
+                output_mode=output_mode,
+            )
+        else:
+            raise ValueError(f"Unsupported head_type: {head_type}")
 
         self._init_weights()
 
@@ -61,9 +81,10 @@ class DGRNChessNetV2(nn.Module):
             if isinstance(m, DFGBlock):
                 nn.init.constant_(m.fusion[1].weight, 0)
 
-        # Start the residual-gain branch exactly at identity.
-        nn.init.constant_(self.head.gain_mlp[-1].weight, 0)
-        nn.init.constant_(self.head.gain_mlp[-1].bias, 0)
+        if isinstance(self.head, ResidualGainValueHead):
+            # Start the residual-gain branch exactly at identity.
+            nn.init.constant_(self.head.gain_mlp[-1].weight, 0)
+            nn.init.constant_(self.head.gain_mlp[-1].bias, 0)
 
     def forward_features(self, x):
         x = self.stem(x)
@@ -91,6 +112,7 @@ class DGRNChessNetV2(nn.Module):
         payload = {
             "state_dict": self.state_dict(),
             "output_mode": self.output_mode,
+            "head_type": self.head_type,
             "arch": "DGRNChessNetV2",
         }
         torch.save(payload, path)
